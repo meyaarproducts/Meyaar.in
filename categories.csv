@@ -1,0 +1,9 @@
+category,label,order,show_in_nav,heading,blurb,image
+Bags,Bags,1,yes,"Every Meyaar bag, in one place.","Travel backpacks, laptop bags, gym duffels and slings. Everything is shown by default — pick a type to narrow it down.",
+Phone Accessories,Phone,2,yes,"Everything your phone needs.","Cases, protection, holders, grips and car mounts.",
+Tech Accessories,Tech,3,yes,"The desk, solved one object at a time.","Cables, chargers, adapters and laptop gear that quietly do their job for years.",
+Audio,Audio,4,yes,"Sound you actually want to live with.","Headphones, earbuds, neckbands and speakers.",
+Wearables,Wearables,5,yes,"For the watch on your wrist.","Smart watches, and straps and bands to go with them.",
+Gaming,Gaming,6,yes,"Gear that keeps up with the player.","Keyboards, mice, controllers and pads.",
+Home & Utility,Living,7,no,"Small objects that change a room.","Lighting, storage and everyday utility.",
+Accessories,Other,8,no,"Everything else.","Products we are still filing into the right category.",
