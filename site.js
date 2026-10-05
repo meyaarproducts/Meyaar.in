@@ -87,7 +87,7 @@
       'Every product is sold and fulfilled by <b>Amazon India</b>' +
       '<span class="opt"> <span class="dot"></span> Bulk &amp; corporate orders welcome</span></div>' +
       '<header class="nav" id="nav"><div class="nav__inner">' +
-      '<a href="index.html" class="brand"><img class="brand__logo" src="assets/logo.png" alt="Meyaar"></a>' +
+      '<a href="index.html" class="brand"><img class="brand__logo" src="logo.png" alt="Meyaar"></a>' +
       '<nav class="nav__links">' +
       '<a class="nav__link' + (active === 'home' ? ' active' : '') + '" href="index.html">Home</a>' +
       links.map(function (c) {
@@ -115,7 +115,7 @@
     var s = DATA.site;
     var cats = DATA.cats.slice(0, 6);
     return '<footer class="footer"><div class="wrap"><div class="foot-grid">' +
-      '<div class="foot-brand"><a href="index.html"><img src="assets/logo-full.png" alt="Meyaar — Quality for you"></a>' +
+      '<div class="foot-brand"><a href="index.html"><img src="logo-full.png" alt="Meyaar — Quality for you"></a>' +
       '<p>' + esc(s.about_short || '') + '</p><div class="socials">' +
       (s.instagram ? '<a href="' + esc(s.instagram) + '" target="_blank" rel="noopener" aria-label="Instagram"><svg><use href="#i-ig"/></svg></a>' : '') +
       (s.facebook ? '<a href="' + esc(s.facebook) + '" target="_blank" rel="noopener" aria-label="Facebook"><svg><use href="#i-fb"/></svg></a>' : '') +
@@ -464,10 +464,10 @@
     var app = $('#app'); if (!app) return;
     var page = document.body.getAttribute('data-page') || 'home';
     Promise.all([
-      fetch('assets/icons.svg').then(function (r) { return r.text(); }),
-      load('data/site.csv'),
-      load('data/categories.csv'),
-      load('data/products.csv')
+      fetch('icons.svg').then(function (r) { return r.text(); }),
+      load('site.csv'),
+      load('categories.csv'),
+      load('products.csv')
     ]).then(function (res) {
       var holder = document.createElement('div');
       holder.style.display = 'none'; holder.innerHTML = res[0];
