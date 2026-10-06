@@ -19,7 +19,7 @@
   };
   /* Ask Amazon's image server for a smaller file — much faster pages */
   var img = function (url, px) {
-    if (!url) return '';
+    if (!url || !/^https?:\/\//.test(url)) return '';
     return url.replace(/\.(jpg|jpeg|png)(\?.*)?$/i, '._SL' + px + '_.$1');
   };
 
@@ -54,74 +54,110 @@
   }
 
   /* ---------- data model ---------- */
-  var DATA = { products: [], groups: [], cats: [], site: {} };
+  var DATA = { products: [], groups: [], cats: [], site: {}, families: {} };
 
-  /* Split a title into the product name and its colour:
-     "…Case for AirPods Pro 3 (2025), Purple" -> base "…(2025)", colour "Purple"
-     "…Vegan Leather (Black)"                -> base "…Vegan Leather", colour "Black"
-     "…(2025), Lotion Jar (Blue)"            -> base "…(2025)", colour "Lotion Jar (Blue)" */
-  function splitTitle(t) {
-    t = String(t || '').trim();
-    if (/\)$/.test(t)) {
-      var depth = 0;
-      for (var i = t.length - 1; i >= 0; i--) {
-        if (t[i] === ')') depth++;
-        else if (t[i] === '(' && --depth === 0) {
-          if (i <= 0) break;
-          var base = t.slice(0, i).replace(/[\s,]+$/, ''), colour = t.slice(i + 1, -1).trim();
-          /* a short design name before the brackets is part of the colour too */
-          var c = base.lastIndexOf(','), tail = base.slice(c + 1).trim();
-          if (c > 0 && tail.length <= 24 && !/[()\d]/.test(tail)) { base = base.slice(0, c).trim(); colour = tail + ' (' + colour + ')'; }
-          return { base: base, colour: colour };
-        }
-      }
-    }
-    var k = t.lastIndexOf(',');
-    if (k > 0) return { base: t.slice(0, k).trim(), colour: t.slice(k + 1).trim() };
-    return { base: t, colour: '' };
-  }
   var sortOf = function (r) { var n = parseInt(r.sort, 10); return isNaN(n) ? 1e9 : n; };
   var yes = function (v) { return String(v || '').toLowerCase() === 'yes'; };
+  var uniq = function (a) { return a.filter(function (x, i) { return a.indexOf(x) === i; }); };
+
+  /* A row is on the site unless you hid it or Amazon removed it */
+  var isLive = function (r) { return !yes(r.hide) && String(r.amazon_status || '').toLowerCase() !== 'removed'; };
+  /* Family = your override, else Amazon's parent SKU, else the listing on its own. Nothing else. */
+  var familyKey = function (r) { return r.family_override || r.group || r.sku; };
+  var rowKey = function (r) { return r.asin || r.sku; };
+
+  /* Amazon variation theme part -> default selector label (families.csv can override per family) */
+  var DIM_LABEL = { COLOR: 'Colour', SIZE: 'Size', BAND_COLOR: 'Band Colour', METAL_TYPE: 'Material',
+                    MODEL: 'Model', STYLE: 'Style', PATTERN: 'Pattern' };
+  var SWATCH_DIMS = { COLOR: 1, BAND_COLOR: 1, PATTERN: 1 };
+  /* Display order of selectors (Amazon lists themes as COLOR/SIZE or SIZE/COLOR; customers always see Colour first) */
+  var DIM_ORDER = ['COLOR', 'BAND_COLOR', 'PATTERN', 'SIZE', 'METAL_TYPE', 'MODEL', 'STYLE'];
+  var dimRank = function (d) { var i = DIM_ORDER.indexOf(d.key); return i < 0 ? 99 : i; };
+  var plural = function (label, n) {
+    var l = label.toLowerCase();
+    return n + ' ' + (n === 1 || /s$/.test(l) ? l : l + 's');
+  };
 
   function buildGroups(rows) {
-    /* Rows join the same product when they share a `group` (Amazon parent SKU)
-       OR their titles are identical once the colour is stripped. */
-    var parent = {};
-    function find(k) { while (parent[k] !== k) { parent[k] = parent[parent[k]]; k = parent[k]; } return k; }
-    function union(a, b) { a = find(a); b = find(b); if (a !== b) parent[b] = a; }
-    var live = rows.filter(function (r) { return !yes(r.hide); });
-    live.forEach(function (r) {
-      var g = 'g:' + (r.group || r.sku), base = splitTitle(r.title).base.toLowerCase().replace(/\s+/g, ' ');
-      r._colour = r.colour || r.variant_label || splitTitle(r.title).colour;
-      if (!(g in parent)) parent[g] = g;
-      r._key = g;
-      if (base.length >= 15) {
-        var t = 't:' + base;
-        if (!(t in parent)) parent[t] = t;
-        union(g, t);
-      }
-    });
     var map = {}, order = [];
-    live.forEach(function (r) {
-      var root = find(r._key);
-      if (!map[root]) { map[root] = { id: r.group || r.sku, variants: [] }; order.push(root); }
-      map[root].variants.push(r);
+    rows.forEach(function (r) {
+      if (!isLive(r)) return;
+      var k = familyKey(r);
+      if (!map[k]) { map[k] = { id: k, variants: [] }; order.push(k); }
+      map[k].variants.push(r);
     });
-    return order.map(function (g) {
-      var p = map[g], v = p.variants;
-      v.sort(function (a, b) { return sortOf(a) - sortOf(b); });
-      var m = v[0];
-      p.title = m.short_title || m.title;
-      p.full_title = m.title;
-      p.category = m.category; p.subcategory = m.subcategory;
-      p.price = m.price; p.mrp = m.mrp; p.model = m.model;
-      p.image = m.image_main;
-      p.sort = sortOf(m);
-      p.featured = v.some(function (x) { return yes(x.featured); });
-      p.isNew = v.some(function (x) { return yes(x['new']); });
-      p.colours = v.map(function (x) { return x._colour; }).filter(Boolean);
-      return p;
-    });
+    return order.map(function (k) { return describeFamily(map[k]); });
+  }
+
+  /* Work out the family's representative child and its variation selectors.
+     matrix: one selector per Amazon dimension; every child is one exact combination.
+     simple: the data can't be trusted as a grid (flagged) — one neutral selector listing each child.
+     single: one child, no selector. */
+  function describeFamily(p) {
+    var v = p.variants, fam = DATA.families[p.id] || {};
+    var rep = v.filter(function (x) { return yes(x.primary); })[0] ||
+              v.slice().sort(function (a, b) { return sortOf(a) - sortOf(b); })[0];
+    p.rep = rep;
+    p.title = rep.short_title || rep.title;
+    p.full_title = rep.title;
+    p.category = rep.category; p.subcategory = rep.subcategory;
+    p.price = rep.price; p.mrp = rep.mrp; p.model = rep.model;
+    p.image = rep.primary_image || rep.image_main;
+    p.sort = Math.min.apply(null, v.map(sortOf));
+    p.featured = v.some(function (x) { return yes(x.featured); });
+    p.isNew = v.some(function (x) { return yes(x['new']); });
+    p.dims = []; p.issues = [];
+    p.mode = v.length > 1 ? 'matrix' : 'single';
+
+    if (p.mode === 'matrix') {
+      var themes = uniq(v.map(function (x) { return x.variation_theme || ''; }));
+      var parts = themes.length === 1 && themes[0] ? themes[0].split('/').slice(0, 3) : [];
+      if (!parts.length) p.issues.push(themes.length > 1 ? 'mixed or missing variation theme' : 'no variation theme');
+      var seenCombo = {}, seenAsin = {};
+      v.forEach(function (x) {
+        x._vals = parts.map(function (d, i) { return x['dim' + (i + 1) + '_value'] || ''; });
+        if (parts.length && x._vals.some(function (y) { return !y; })) p.issues.push('missing value');
+        var c = x._vals.join('\u0001');
+        if (parts.length && seenCombo[c]) p.issues.push('duplicate combination');
+        seenCombo[c] = 1;
+        if (x.asin && seenAsin[x.asin]) p.issues.push('ASIN repeated');
+        seenAsin[x.asin] = 1;
+      });
+      p.issues = uniq(p.issues);
+      if (p.issues.length) p.mode = 'simple';
+      else {
+        parts.forEach(function (d, i) {
+          var values = uniq(v.map(function (x) { return x._vals[i]; }));
+          var dim = { key: d, idx: i, label: fam['dim' + (i + 1) + '_label'] || DIM_LABEL[d] || d,
+                      swatch: !!SWATCH_DIMS[d], values: values };
+          if (values.length > 1) p.dims.push(dim);
+        });
+        p.dims.sort(function (a, b) { return dimRank(a) - dimRank(b) || a.idx - b.idx; });
+        /* keep only the dimensions that actually vary, in display order */
+        v.forEach(function (x) { x._vals = p.dims.map(function (d) { return x._vals[d.idx]; }); });
+      }
+    }
+    if (p.mode === 'simple') {
+      var count = {};
+      v.forEach(function (x) {
+        var base = [x.dim1_value, x.dim2_value, x.dim3_value].filter(Boolean).join(' · ') ||
+                   x.colour || x.variant_label || x.asin || x.sku;
+        count[base] = (count[base] || 0) + 1;
+        x._vals = [count[base] > 1 ? base + ' (' + count[base] + ')' : base];
+      });
+      p.dims = [{ key: 'OPTION', idx: 0, label: 'Option', swatch: true, values: v.map(function (x) { return x._vals[0]; }) }];
+    }
+    if (p.mode === 'single') v.forEach(function (x) { x._vals = []; });
+    p.summary = p.mode === 'simple' ? plural('option', v.length)
+      : p.dims.map(function (d) { return plural(d.label, d.values.length); }).join(' · ');
+    return p;
+  }
+
+  /* The live child matching an exact combination of selected values, or null */
+  function matchChild(grp, vals) {
+    return grp.variants.filter(function (x) {
+      return x._vals.every(function (y, i) { return y === vals[i]; });
+    })[0] || null;
   }
 
   /* ---------- shared chrome ---------- */
@@ -192,13 +228,13 @@
   function productCard(p, delay) {
     var price = money(p.price), mrp = money(p.mrp);
     return '<a class="card rv" style="text-decoration:none' + (delay ? ';transition-delay:' + delay + 's' : '') + '" ' +
-      'href="product.html?g=' + encodeURIComponent(p.id) + '">' +
+      'href="' + esc(productURL(p.rep)) + '">' +
       '<div class="card__media">' + (p.featured ? '<span class="card__badge card__badge--best">Featured</span>' : '') +
       (p.isNew ? '<span class="card__badge card__badge--new">New</span>' : '') +
       '<img class="prod photo" loading="lazy" src="' + esc(img(p.image, 500)) + '" alt="' + esc(p.title) + '"></div>' +
       '<div class="card__body"><span class="card__cat">' + esc(p.subcategory || p.category) + '</span>' +
       '<h3 class="card__name">' + esc(p.title) + '</h3>' +
-      (p.colours.length > 1 ? '<div class="card__meta">' + p.colours.length + ' colours</div>' : '') +
+      (p.summary ? '<div class="card__meta">' + esc(p.summary) + '</div>' : '') +
       '<div class="card__foot">' +
       (price ? '<span class="card__price">' + price + (mrp && mrp !== price ? ' <s>' + mrp + '</s>' : '') + '</span>' : '') +
       '<span class="btn btn--amazon btn--sm">View <svg><use href="#i-arrow"/></svg></span></div></div></a>';
@@ -240,7 +276,7 @@
       '<span class="line"><i class="accent">' + esc(s.hero_line3 || 'Quality for you.') + '</i></span></h1>' +
       '<p class="lede hero__sub">' + esc(s.hero_sub || '') + '</p>' +
       '<div class="hero__ctas">' +
-      (hero.id ? '<a href="product.html?g=' + encodeURIComponent(hero.id) + '" class="btn btn--amazon btn--lg">See the ' + esc((hero.title || '').split(' ')[1] || 'range') + ' <svg><use href="#i-arrow"/></svg></a>' : '') +
+      (hero.rep ? '<a href="' + esc(productURL(hero.rep)) + '" class="btn btn--amazon btn--lg">See the ' + esc((hero.title || '').split(' ')[1] || 'range') + ' <svg><use href="#i-arrow"/></svg></a>' : '') +
       '<a href="#shop" class="btn btn--ghost btn--lg">Shop the range <svg><use href="#i-arrow"/></svg></a></div>' +
       '<div class="hero__stats">' +
       [['stat1_value', 'stat1_label'], ['stat2_value', 'stat2_label'], ['stat3_value', 'stat3_label'], ['stat4_value', 'stat4_label']]
@@ -337,32 +373,105 @@
     if (grid) { page(); var mb = $('#more'); if (mb) mb.addEventListener('click', page); }
   }
 
-  function renderProduct(app) {
-    var gid = qs('g'), sku = qs('sku');
-    var grp = DATA.groups.filter(function (g) {
-      return gid ? g.id === gid || g.variants.some(function (v) { return (v.group || v.sku) === gid; })
-                 : g.variants.some(function (v) { return v.sku === sku; });
-    })[0];
-    if (!grp) { app.innerHTML = navHTML('') + '<section class="section"><div class="wrap"><h1 class="h-lg">Product not found</h1><p class="lede" style="margin-top:16px"><a class="link-arrow" href="index.html">Back to home</a></p></div></section>' + footHTML(); return; }
+  /* Find the family + child a product URL points at.
+     ?asin=B0…  exact child · ?sku=…  exact child (old swatch links) · ?g=…  family (old card links) */
+  function findTarget(asin, sku, gid) {
+    var hit = function (test) {
+      for (var i = 0; i < DATA.groups.length; i++) {
+        var g = DATA.groups[i];
+        for (var j = 0; j < g.variants.length; j++) if (test(g.variants[j])) return { grp: g, v: g.variants[j] };
+      }
+      return null;
+    };
+    var famOfRaw = function (test) {          /* a hidden child: open its family at the representative */
+      var r = DATA.products.filter(test)[0];
+      var g = r && DATA.groups.filter(function (x) { return x.id === familyKey(r); })[0];
+      return g ? { grp: g, v: g.rep } : null;
+    };
+    if (asin) {
+      var a = hit(function (v) { return v.asin === asin; }) || famOfRaw(function (r) { return r.asin === asin; });
+      if (a) return a;
+    }
+    if (sku) {
+      var s = hit(function (v) { return v.sku === sku && v.asin; }) || hit(function (v) { return v.sku === sku; }) ||
+              famOfRaw(function (r) { return r.sku === sku; });
+      if (s) return s;
+    }
+    if (gid) {
+      var g = DATA.groups.filter(function (x) { return x.id === gid; })[0];
+      if (g) return { grp: g, v: g.rep };
+      return hit(function (v) { return v.group === gid || v.sku === gid; }) ||
+             famOfRaw(function (r) { return r.group === gid || r.sku === gid; });
+    }
+    return null;
+  }
+  var productURL = function (v) {
+    return 'product.html?' + (v.asin ? 'asin=' + encodeURIComponent(v.asin) : 'sku=' + encodeURIComponent(v.sku));
+  };
 
-    var v = sku ? (grp.variants.filter(function (x) { return x.sku === sku; })[0] || grp.variants[0]) : grp.variants[0];
-    var shots = [v.image_main, v.image_1, v.image_2, v.image_3, v.image_4, v.image_5].filter(Boolean);
-    var bullets = [v.bullet1, v.bullet2, v.bullet3, v.bullet4, v.bullet5].filter(Boolean);
-    var specs = [['Model', v.model], ['Colour', v.colour || (grp.variants.length > 1 ? v._colour : '')], ['Material', v.material],
-                 ['Brand', v.brand], ['Category', v.category + (v.subcategory ? ' · ' + v.subcategory : '')],
-                 ['Sold & fulfilled by', 'Amazon India']].filter(function (r) { return r[1]; });
+  function renderProduct(app) {
+    var t = findTarget(qs('asin'), qs('sku'), qs('g'));
+    if (!t) { app.innerHTML = navHTML('') + '<section class="section"><div class="wrap"><h1 class="h-lg">Product not found</h1><p class="lede" style="margin-top:16px"><a class="link-arrow" href="index.html">Back to home</a></p></div></section>' + footHTML(); return; }
+    var grp = t.grp;
     var related = DATA.groups.filter(function (g) {
       return g.id !== grp.id && (grp.subcategory ? g.subcategory === grp.subcategory : g.category === grp.category);
     }).slice(0, 4);
+
+    app.innerHTML = navHTML(grp.category) + '<div id="pdpLive"></div>' +
+      (related.length ? '<section class="section"><div class="wrap wrap--narrow"><div class="sec-head rv"><div>' +
+        '<span class="eyebrow">You might also like</span><h2 class="h-md">More ' + esc(grp.subcategory || grp.category) + '</h2></div>' +
+        '<a class="link-arrow" href="category.html?c=' + encodeURIComponent(grp.category) + '">All ' + esc(grp.category) + ' <svg><use href="#i-arrow"/></svg></a></div>' +
+        '<div class="grid-4">' + related.map(function (p, i) { return productCard(p, i * .05); }).join('') + '</div></div></section>' : '') +
+      footHTML();
+
+    paintVariant(grp, t.v);
+
+    /* Back / forward between variations of this product */
+    window.onpopstate = function () {
+      var n = findTarget(qs('asin'), qs('sku'), qs('g'));
+      if (n && n.grp === grp) paintVariant(grp, n.v); else location.reload();
+    };
+  }
+
+  /* One selector per variation dimension. A value is enabled only if the exact combination
+     (that value + the other current selections) exists as a live child ASIN. */
+  function selectorsHTML(grp, v) {
+    return grp.dims.map(function (d, i) {
+      var cur = v._vals[i];
+      return '<div class="opt" data-dim="' + i + '"><div class="opt__label">' + esc(d.label) + ' <b>' + esc(cur) + '</b></div>' +
+        '<div class="' + (d.swatch ? 'swatches' : 'pills') + '" role="radiogroup" aria-label="' + esc(d.label) + '">' +
+        d.values.map(function (val) {
+          var want = v._vals.slice(); want[i] = val;
+          var child = matchChild(grp, want), sel = val === cur, dis = !child;
+          var tip = dis ? val + ' — not available with the current selection' : val;
+          var attrs = ' type="button" role="radio" aria-checked="' + sel + '" title="' + esc(tip) + '"' +
+            (dis ? ' disabled aria-disabled="true"' : ' data-key="' + esc(rowKey(child)) + '"');
+          if (!d.swatch) return '<button class="pill' + (sel ? ' sel' : '') + (dis ? ' dis' : '') + '"' + attrs + '>' + esc(val) + '</button>';
+          var face = child || grp.variants.filter(function (x) { return x._vals[i] === val; })[0];
+          return '<button class="sw-img' + (sel ? ' sel' : '') + (dis ? ' dis' : '') + '"' + attrs + '>' +
+            '<img loading="lazy" src="' + esc(img(face.swatch || face.image_main, 160)) + '" alt="' + esc(val) + '"></button>';
+        }).join('') + '</div></div>';
+    }).join('');
+  }
+
+  function paintVariant(grp, v) {
+    var host = $('#pdpLive');
+    var shots = [v.image_main, v.image_1, v.image_2, v.image_3, v.image_4, v.image_5].filter(function (u) { return /^https?:\/\//.test(u || ''); });
+    var bullets = [v.bullet1, v.bullet2, v.bullet3, v.bullet4, v.bullet5].filter(Boolean);
+    var varSpecs = grp.mode === 'matrix' ? grp.dims.map(function (d, i) { return [d.label, v._vals[i]]; })
+                 : grp.mode === 'simple' ? [['Option', v._vals[0]]] : [['Colour', v.colour]];
+    var specs = [['Model', v.model]].concat(varSpecs).concat([['Material', v.material], ['Brand', v.brand],
+                 ['ASIN', v.asin], ['Category', grp.category + (grp.subcategory ? ' · ' + grp.subcategory : '')],
+                 ['Sold & fulfilled by', 'Amazon India']]).filter(function (r) { return r[1]; });
     document.title = v.title + ' — Meyaar';
 
-    app.innerHTML = navHTML(v.category) +
+    host.innerHTML =
       '<section class="wrap wrap--narrow"><div class="crumb"><a href="index.html">Home</a><svg><use href="#i-arrow"/></svg>' +
-      '<a href="category.html?c=' + encodeURIComponent(v.category) + '">' + esc(v.category) + '</a><svg><use href="#i-arrow"/></svg>' +
-      (v.subcategory ? '<a href="category.html?c=' + encodeURIComponent(v.category) + '&s=' + encodeURIComponent(v.subcategory) + '">' + esc(v.subcategory) + '</a>' +
+      '<a href="category.html?c=' + encodeURIComponent(grp.category) + '">' + esc(grp.category) + '</a><svg><use href="#i-arrow"/></svg>' +
+      (grp.subcategory ? '<a href="category.html?c=' + encodeURIComponent(grp.category) + '&s=' + encodeURIComponent(grp.subcategory) + '">' + esc(grp.subcategory) + '</a>' +
       '<svg><use href="#i-arrow"/></svg>' : '') + '<b>' + esc(grp.title) + '</b></div></section>' +
 
-      '<section class="wrap wrap--narrow" style="padding-bottom:clamp(40px,5vw,72px)"><div class="pdp">' +
+      '<section class="wrap wrap--narrow" style="padding-bottom:clamp(40px,5vw,72px)"><div class="pdp" data-asin="' + esc(v.asin) + '">' +
       '<div class="pdp__gallery"><div class="gal__main">' +
       '<img class="prod photo" id="galMain" src="' + esc(img(shots[0], 1000)) + '" alt="' + esc(v.title) + '"></div>' +
       (shots.length > 1 ? '<div class="gal__thumbs">' + shots.map(function (u, i) {
@@ -370,10 +479,10 @@
           '<img class="photo" loading="lazy" src="' + esc(img(u, 240)) + '" alt=""></button>';
       }).join('') + '</div>' : '') + '</div>' +
 
-      '<div class="pdp__head"><span class="eyebrow">' + esc(v.category) + (v.subcategory ? ' · ' + esc(v.subcategory) : '') + '</span>' +
-      '<h1 class="h-md">' + esc(v.title) + '</h1>' +
+      '<div class="pdp__head"><span class="eyebrow">' + esc(grp.category) + (grp.subcategory ? ' · ' + esc(grp.subcategory) : '') + '</span>' +
+      '<h1 class="h-md" id="pdpTitle">' + esc(v.title) + '</h1>' +
       (v.model ? '<p style="color:var(--muted);font-size:14px;margin-bottom:16px">Model ' + esc(v.model) + '</p>' : '') +
-      (money(v.price) ? '<div class="pdp__rating"><span class="card__price" style="font-size:24px">' + money(v.price) + '</span>' +
+      (money(v.price) ? '<div class="pdp__rating"><span class="card__price" id="pdpPrice" style="font-size:24px">' + money(v.price) + '</span>' +
         (money(v.mrp) && v.mrp !== v.price ? '<s style="color:var(--muted-2)">' + money(v.mrp) + '</s>' : '') +
         '<span class="muted" style="font-size:12.5px">MRP incl. of all taxes · live price on Amazon</span></div>' : '') +
       (v.description ? (function (d) {
@@ -382,13 +491,9 @@
           (d.length > 300 ? '<button class="link-arrow" id="descMore" style="margin:-14px 0 24px">Read full description <svg><use href="#i-arrow"/></svg></button>' : '');
       })(v.description) : '') +
 
-      (grp.variants.length > 1 ? '<div class="opt"><div class="opt__label">Colour — <b>' + esc(v._colour) + '</b></div>' +
-        '<div class="swatches">' + grp.variants.map(function (x) {
-          return '<a class="sw-img' + (x.sku === v.sku ? ' sel' : '') + '" href="product.html?g=' + encodeURIComponent(grp.id) + '&sku=' + encodeURIComponent(x.sku) + '" title="' + esc(x._colour) + '">' +
-            '<img loading="lazy" src="' + esc(img(x.swatch || x.image_main, 160)) + '" alt="' + esc(x._colour) + '"></a>';
-        }).join('') + '</div></div>' : '') +
+      '<div class="variants">' + selectorsHTML(grp, v) + '</div>' +
 
-      '<div class="buybox"><a href="' + esc(v.amazon_url) + '" target="_blank" rel="noopener" class="btn btn--amazon btn--xl btn--full">Shop on Amazon <svg><use href="#i-ext"/></svg></a>' +
+      '<div class="buybox"><a href="' + esc(v.amazon_url) + '" target="_blank" rel="noopener" class="btn btn--amazon btn--xl btn--full" id="buyAmazon">Shop on Amazon <svg><use href="#i-ext"/></svg></a>' +
       '<div class="buybox__note"><svg><use href="#i-truck"/></svg> Sold and fulfilled by Amazon India — live price, delivery and returns on Amazon.</div>' +
       '<div class="buybox__note"><svg><use href="#i-shield"/></svg> Genuine Meyaar product. Support: ' + esc(DATA.site.support_email) + '</div></div>' +
 
@@ -398,30 +503,35 @@
 
       '<section class="section band-grey"><div class="wrap wrap--narrow">' +
       '<div class="grid-2" style="gap:clamp(30px,5vw,72px);align-items:start">' +
-      '<div class="rv-l"><span class="eyebrow">Specifications</span><h2 class="h-md" style="margin-bottom:22px">The details</h2>' +
+      '<div class="rv-l in"><span class="eyebrow">Specifications</span><h2 class="h-md" style="margin-bottom:22px">The details</h2>' +
       '<table class="spec-table">' + specs.map(function (r) {
         return '<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>';
       }).join('') + '</table></div>' +
-      '<div class="rv-r"><span class="eyebrow">Buy it on Amazon</span><h2 class="h-md" style="margin-bottom:18px">Ready when you are</h2>' +
+      '<div class="rv-r in"><span class="eyebrow">Buy it on Amazon</span><h2 class="h-md" style="margin-bottom:18px">Ready when you are</h2>' +
       '<p class="lede" style="margin-bottom:26px">Live pricing, delivery estimates and returns are handled by Amazon India — the account you already have.</p>' +
       '<a href="' + esc(v.amazon_url) + '" target="_blank" rel="noopener" class="btn btn--amazon btn--lg">Shop on Amazon <svg><use href="#i-ext"/></svg></a>' +
-      '</div></div></div></section>' +
+      '</div></div></div></section>';
 
-      (related.length ? '<section class="section"><div class="wrap wrap--narrow"><div class="sec-head rv"><div>' +
-        '<span class="eyebrow">You might also like</span><h2 class="h-md">More ' + esc(grp.subcategory || grp.category) + '</h2></div>' +
-        '<a class="link-arrow" href="category.html?c=' + encodeURIComponent(v.category) + '">All ' + esc(v.category) + ' <svg><use href="#i-arrow"/></svg></a></div>' +
-        '<div class="grid-4">' + related.map(function (p, i) { return productCard(p, i * .05); }).join('') + '</div></div></section>' : '') +
-      footHTML();
+    var dm = $('#descMore', host);
+    if (dm) dm.addEventListener('click', function () { $('#desc', host).textContent = v.description; dm.remove(); });
 
-    var dm = $('#descMore');
-    if (dm) dm.addEventListener('click', function () { $('#desc').textContent = v.description; dm.remove(); });
-
-    $$('.thumb').forEach(function (t) {
+    $$('.thumb', host).forEach(function (t) {
       t.addEventListener('click', function () {
-        $$('.thumb').forEach(function (x) { x.classList.remove('sel'); });
+        $$('.thumb', host).forEach(function (x) { x.classList.remove('sel'); });
         t.classList.add('sel');
-        var m = $('#galMain'); m.style.opacity = '0';
+        var m = $('#galMain', host); m.style.opacity = '0';
         setTimeout(function () { m.src = t.getAttribute('data-src'); m.style.opacity = '1'; }, 140);
+      });
+    });
+
+    /* Only enabled options carry data-key; disabled ones are real disabled buttons and never change anything */
+    $$('.variants button[data-key]', host).forEach(function (b) {
+      b.addEventListener('click', function () {
+        var key = b.getAttribute('data-key');
+        var next = grp.variants.filter(function (x) { return rowKey(x) === key; })[0];
+        if (!next || next === v) return;
+        history.pushState(null, '', productURL(next));
+        paintVariant(grp, next);
       });
     });
   }
@@ -526,7 +636,8 @@
       fetch('icons.svg').then(function (r) { return r.text(); }),
       load('site.csv'),
       load('categories.csv'),
-      load('products.csv')
+      load('products.csv'),
+      load('families.csv').catch(function () { return []; })
     ]).then(function (res) {
       var holder = document.createElement('div');
       holder.style.display = 'none'; holder.innerHTML = res[0];
@@ -534,6 +645,7 @@
       res[1].forEach(function (r) { DATA.site[r.key] = r.value; });
       DATA.cats = res[2].sort(function (a, b) { return (+a.order || 99) - (+b.order || 99); });
       DATA.products = res[3];
+      res[4].forEach(function (f) { if (f.family) DATA.families[f.family] = f; });
       DATA.groups = buildGroups(DATA.products);
       if (page === 'home') renderHome(app);
       else if (page === 'category') renderCategory(app);

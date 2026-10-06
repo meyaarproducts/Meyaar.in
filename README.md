@@ -71,18 +71,37 @@ e.g. `…Case for AirPods Pro 3 (2025), Purple` — are also shown as one produc
 
 ---
 
+## Product families and variations
+
+The website mirrors Amazon's variation structure:
+
+* **Family** — rows with the same `group` (Amazon parent SKU) are one product. To move a row into a different
+  family, put a value in `family_override` (e.g. `B0HHSLDHRK` → `PS5-DUSTPLUG`). Titles are never used for grouping.
+* **Selectors** — `variation_theme` (e.g. `COLOR/SIZE`) and `dim1_value`…`dim3_value` come from Amazon.
+  Each dimension gets its own selector (Colour, Size, Band Colour, Material, Model…); each child ASIN is one
+  combination. Combinations that don't exist are shown greyed out and can't be picked.
+* **Selector labels** — `families.csv` renames a family's selector, e.g. Colour → Pack. Only add a row when Amazon's
+  field name is misleading for that family.
+* **Representative** — `primary=yes` picks the child shown on the card; `primary_image` overrides its card image.
+* **Product links** — `product.html?asin=B0…` opens an exact child. Old `?g=` and `?sku=` links still work.
+* Families whose Amazon data is inconsistent (see `catalogue_exceptions.csv`) fall back to a single "Option" selector.
+
+---
+
 ## Refreshing the whole catalogue from Amazon
 
 When you add lots of products on Amazon:
 
 1. Seller Central → **Catalogue → Category Listings Report** → download the ZIP
-2. Run:
+2. Run (any number of report files, a folder, or the ZIP):
    ```
-   python3 tools/build_catalogue.py CategoryListingsReport.zip
+   python3 build_catalogue.py report1.xlsm report2.xlsm
    ```
-3. Upload the regenerated `data/products.csv`
+   Add `--check` to only write the audit files without touching `products.csv`.
+3. Review `catalogue_exceptions.csv` (problems) and `catalogue_candidates.csv` (Amazon listings not on the site yet).
 
-Your manual edits to `category`, `subcategory`, `featured`, `sort`, `hide` and `new` are kept, matched by SKU.
+Only ASINs already in `products.csv` are refreshed. Your columns — `category`, `subcategory`, `hide`, `featured`, `sort`,
+`new`, `family_override`, `primary`, `primary_image`, `amazon_url` — are never changed.
 
 ---
 
