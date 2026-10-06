@@ -41,7 +41,11 @@ Everything else (`*.html`, `assets/`) is the design. Leave it alone unless you w
 
 **Hide a product** — put `yes` in the `hide` column.
 
-**Feature a product on the home page** — put `yes` in the `featured` column.
+**Bestsellers row on the home page** — the 8 products with the lowest `sort` number (1 = best seller). Rows with an empty `sort` never appear there.
+
+**New Arrivals row on the home page** — put `yes` in the `new` column (8 shown, best sellers first).
+
+**Feature a product** — put `yes` in the `featured` column. The first featured product (by `sort`) is the big hero image.
 
 **Move a product to a different category** — change the `category` and `subcategory` cells. New category names appear automatically; add a row to `categories.csv` if you want it in the menu.
 
@@ -62,6 +66,8 @@ Add one row per colour/variant. Minimum columns to fill:
 `sku, asin, group, title, short_title, category, subcategory, colour, price, mrp, image_main, amazon_url`
 
 Rows that share the same **`group`** value are shown as one product with colour options.
+Rows whose titles are identical apart from the colour — the part after the last comma, or inside the final brackets,
+e.g. `…Case for AirPods Pro 3 (2025), Purple` — are also shown as one product.
 
 ---
 
@@ -76,7 +82,7 @@ When you add lots of products on Amazon:
    ```
 3. Upload the regenerated `data/products.csv`
 
-Your manual edits to `category`, `subcategory`, `featured`, `sort` and `hide` are kept, matched by SKU.
+Your manual edits to `category`, `subcategory`, `featured`, `sort`, `hide` and `new` are kept, matched by SKU.
 
 ---
 

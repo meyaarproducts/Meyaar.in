@@ -56,25 +56,70 @@
   /* ---------- data model ---------- */
   var DATA = { products: [], groups: [], cats: [], site: {} };
 
+  /* Split a title into the product name and its colour:
+     "…Case for AirPods Pro 3 (2025), Purple" -> base "…(2025)", colour "Purple"
+     "…Vegan Leather (Black)"                -> base "…Vegan Leather", colour "Black"
+     "…(2025), Lotion Jar (Blue)"            -> base "…(2025)", colour "Lotion Jar (Blue)" */
+  function splitTitle(t) {
+    t = String(t || '').trim();
+    if (/\)$/.test(t)) {
+      var depth = 0;
+      for (var i = t.length - 1; i >= 0; i--) {
+        if (t[i] === ')') depth++;
+        else if (t[i] === '(' && --depth === 0) {
+          if (i <= 0) break;
+          var base = t.slice(0, i).replace(/[\s,]+$/, ''), colour = t.slice(i + 1, -1).trim();
+          /* a short design name before the brackets is part of the colour too */
+          var c = base.lastIndexOf(','), tail = base.slice(c + 1).trim();
+          if (c > 0 && tail.length <= 24 && !/[()\d]/.test(tail)) { base = base.slice(0, c).trim(); colour = tail + ' (' + colour + ')'; }
+          return { base: base, colour: colour };
+        }
+      }
+    }
+    var k = t.lastIndexOf(',');
+    if (k > 0) return { base: t.slice(0, k).trim(), colour: t.slice(k + 1).trim() };
+    return { base: t, colour: '' };
+  }
+  var sortOf = function (r) { var n = parseInt(r.sort, 10); return isNaN(n) ? 1e9 : n; };
+  var yes = function (v) { return String(v || '').toLowerCase() === 'yes'; };
+
   function buildGroups(rows) {
+    /* Rows join the same product when they share a `group` (Amazon parent SKU)
+       OR their titles are identical once the colour is stripped. */
+    var parent = {};
+    function find(k) { while (parent[k] !== k) { parent[k] = parent[parent[k]]; k = parent[k]; } return k; }
+    function union(a, b) { a = find(a); b = find(b); if (a !== b) parent[b] = a; }
+    var live = rows.filter(function (r) { return !yes(r.hide); });
+    live.forEach(function (r) {
+      var g = 'g:' + (r.group || r.sku), base = splitTitle(r.title).base.toLowerCase().replace(/\s+/g, ' ');
+      r._colour = r.colour || r.variant_label || splitTitle(r.title).colour;
+      if (!(g in parent)) parent[g] = g;
+      r._key = g;
+      if (base.length >= 15) {
+        var t = 't:' + base;
+        if (!(t in parent)) parent[t] = t;
+        union(g, t);
+      }
+    });
     var map = {}, order = [];
-    rows.forEach(function (r) {
-      if ((r.hide || '').toLowerCase() === 'yes') return;
-      var g = r.group || r.sku;
-      if (!map[g]) { map[g] = { id: g, variants: [] }; order.push(g); }
-      map[g].variants.push(r);
+    live.forEach(function (r) {
+      var root = find(r._key);
+      if (!map[root]) { map[root] = { id: r.group || r.sku, variants: [] }; order.push(root); }
+      map[root].variants.push(r);
     });
     return order.map(function (g) {
       var p = map[g], v = p.variants;
-      v.sort(function (a, b) { return (parseInt(a.sort || 999, 10)) - (parseInt(b.sort || 999, 10)); });
+      v.sort(function (a, b) { return sortOf(a) - sortOf(b); });
       var m = v[0];
       p.title = m.short_title || m.title;
       p.full_title = m.title;
       p.category = m.category; p.subcategory = m.subcategory;
       p.price = m.price; p.mrp = m.mrp; p.model = m.model;
       p.image = m.image_main;
-      p.featured = v.some(function (x) { return (x.featured || '').toLowerCase() === 'yes'; });
-      p.colours = v.map(function (x) { return x.colour || x.variant_label; }).filter(Boolean);
+      p.sort = sortOf(m);
+      p.featured = v.some(function (x) { return yes(x.featured); });
+      p.isNew = v.some(function (x) { return yes(x['new']); });
+      p.colours = v.map(function (x) { return x._colour; }).filter(Boolean);
       return p;
     });
   }
@@ -149,6 +194,7 @@
     return '<a class="card rv" style="text-decoration:none' + (delay ? ';transition-delay:' + delay + 's' : '') + '" ' +
       'href="product.html?g=' + encodeURIComponent(p.id) + '">' +
       '<div class="card__media">' + (p.featured ? '<span class="card__badge card__badge--best">Featured</span>' : '') +
+      (p.isNew ? '<span class="card__badge card__badge--new">New</span>' : '') +
       '<img class="prod photo" loading="lazy" src="' + esc(img(p.image, 500)) + '" alt="' + esc(p.title) + '"></div>' +
       '<div class="card__body"><span class="card__cat">' + esc(p.subcategory || p.category) + '</span>' +
       '<h3 class="card__name">' + esc(p.title) + '</h3>' +
@@ -171,9 +217,16 @@
   /* ---------- pages ---------- */
   function renderHome(app) {
     var s = DATA.site;
-    var featured = DATA.groups.filter(function (g) { return g.featured; });
-    if (!featured.length) featured = DATA.groups.slice(0, 8);
-    var hero = featured[0] || DATA.groups[0] || {};
+    var byRank = function (a, b) { return a.sort - b.sort; };
+    var best = DATA.groups.filter(function (g) { return g.sort < 1e9; }).sort(byRank).slice(0, 8);
+    var fresh = DATA.groups.filter(function (g) { return g.isNew; }).sort(byRank).slice(0, 8);
+    var featured = DATA.groups.filter(function (g) { return g.featured; }).sort(byRank);
+    var hero = featured[0] || best[0] || DATA.groups[0] || {};
+    var row = function (id, eyebrow, heading, list) {
+      return list.length ? '<section class="section"' + (id ? ' id="' + id + '"' : '') + '><div class="wrap"><div class="sec-head rv"><div>' +
+        '<span class="eyebrow">' + eyebrow + '</span><h2 class="h-lg">' + esc(heading) + '</h2></div></div>' +
+        '<div class="grid-4">' + list.map(function (p, i) { return productCard(p, i * .05); }).join('') + '</div></div></section>' : '';
+    };
     var counts = {};
     DATA.groups.forEach(function (g) { counts[g.category] = (counts[g.category] || 0) + 1; });
 
@@ -203,9 +256,9 @@
         return '<span class="marquee__item"><svg><use href="#i-check"/></svg> ' + esc(t.trim()) + '</span>';
       }).join('') + '</div></div></div>' +
 
-      '<section class="section" id="shop"><div class="wrap"><div class="sec-head rv"><div>' +
-      '<span class="eyebrow">Featured</span><h2 class="h-lg">' + esc(s.featured_heading || 'Picked for you.') + '</h2></div></div>' +
-      '<div class="grid-4">' + featured.slice(0, 8).map(function (p, i) { return productCard(p, i * .05); }).join('') + '</div></div></section>' +
+      '<div id="shop"></div>' +
+      row('bestsellers', 'Bestsellers', s.bestsellers_heading || s.featured_heading || 'The ones people keep coming back for.', best) +
+      row('new', 'New arrivals', s.new_heading || 'Just landed.', fresh) +
 
       '<section class="section section--tight band-grey"><div class="wrap"><div class="sec-head rv"><div>' +
       '<span class="eyebrow">Shop by category</span><h2 class="h-lg">' + esc(s.categories_heading || 'Every category, one standard.') + '</h2></div>' +
@@ -243,10 +296,13 @@
   function renderCategory(app) {
     var cname = qs('c'), sub = qs('s');
     var cat = DATA.cats.filter(function (c) { return c.category === cname; })[0] || { category: cname, label: cname };
-    var all = DATA.groups.filter(function (g) { return g.category === cname; });
+    var all = DATA.groups.filter(function (g) { return g.category === cname; })
+      .sort(function (a, b) { return a.sort - b.sort; });
     var subs = [];
     all.forEach(function (g) { if (g.subcategory && subs.indexOf(g.subcategory) < 0) subs.push(g.subcategory); });
-    subs.sort();
+    var subOrder = (cat.subcategories || '').split('|').map(function (x) { return x.trim(); }).filter(Boolean);
+    var rankSub = function (x) { var i = subOrder.indexOf(x); return i < 0 ? 999 : i; };
+    subs.sort(function (a, b) { return rankSub(a) - rankSub(b) || (a < b ? -1 : a > b ? 1 : 0); });
     var shown = sub ? all.filter(function (g) { return g.subcategory === sub; }) : all;
 
     document.title = (cat.label || cname) + ' — Meyaar';
@@ -284,24 +340,27 @@
   function renderProduct(app) {
     var gid = qs('g'), sku = qs('sku');
     var grp = DATA.groups.filter(function (g) {
-      return gid ? g.id === gid : g.variants.some(function (v) { return v.sku === sku; });
+      return gid ? g.id === gid || g.variants.some(function (v) { return (v.group || v.sku) === gid; })
+                 : g.variants.some(function (v) { return v.sku === sku; });
     })[0];
     if (!grp) { app.innerHTML = navHTML('') + '<section class="section"><div class="wrap"><h1 class="h-lg">Product not found</h1><p class="lede" style="margin-top:16px"><a class="link-arrow" href="index.html">Back to home</a></p></div></section>' + footHTML(); return; }
 
     var v = sku ? (grp.variants.filter(function (x) { return x.sku === sku; })[0] || grp.variants[0]) : grp.variants[0];
     var shots = [v.image_main, v.image_1, v.image_2, v.image_3, v.image_4, v.image_5].filter(Boolean);
     var bullets = [v.bullet1, v.bullet2, v.bullet3, v.bullet4, v.bullet5].filter(Boolean);
-    var specs = [['Model', v.model], ['Colour', v.colour], ['Material', v.material],
-                 ['Brand', v.brand], ['Category', v.category + ' · ' + v.subcategory],
+    var specs = [['Model', v.model], ['Colour', v.colour || (grp.variants.length > 1 ? v._colour : '')], ['Material', v.material],
+                 ['Brand', v.brand], ['Category', v.category + (v.subcategory ? ' · ' + v.subcategory : '')],
                  ['Sold & fulfilled by', 'Amazon India']].filter(function (r) { return r[1]; });
-    var related = DATA.groups.filter(function (g) { return g.subcategory === grp.subcategory && g.id !== grp.id; }).slice(0, 4);
+    var related = DATA.groups.filter(function (g) {
+      return g.id !== grp.id && (grp.subcategory ? g.subcategory === grp.subcategory : g.category === grp.category);
+    }).slice(0, 4);
     document.title = v.title + ' — Meyaar';
 
     app.innerHTML = navHTML(v.category) +
       '<section class="wrap wrap--narrow"><div class="crumb"><a href="index.html">Home</a><svg><use href="#i-arrow"/></svg>' +
       '<a href="category.html?c=' + encodeURIComponent(v.category) + '">' + esc(v.category) + '</a><svg><use href="#i-arrow"/></svg>' +
-      '<a href="category.html?c=' + encodeURIComponent(v.category) + '&s=' + encodeURIComponent(v.subcategory) + '">' + esc(v.subcategory) + '</a>' +
-      '<svg><use href="#i-arrow"/></svg><b>' + esc(grp.title) + '</b></div></section>' +
+      (v.subcategory ? '<a href="category.html?c=' + encodeURIComponent(v.category) + '&s=' + encodeURIComponent(v.subcategory) + '">' + esc(v.subcategory) + '</a>' +
+      '<svg><use href="#i-arrow"/></svg>' : '') + '<b>' + esc(grp.title) + '</b></div></section>' +
 
       '<section class="wrap wrap--narrow" style="padding-bottom:clamp(40px,5vw,72px)"><div class="pdp">' +
       '<div class="pdp__gallery"><div class="gal__main">' +
@@ -311,7 +370,7 @@
           '<img class="photo" loading="lazy" src="' + esc(img(u, 240)) + '" alt=""></button>';
       }).join('') + '</div>' : '') + '</div>' +
 
-      '<div class="pdp__head"><span class="eyebrow">' + esc(v.category) + ' · ' + esc(v.subcategory) + '</span>' +
+      '<div class="pdp__head"><span class="eyebrow">' + esc(v.category) + (v.subcategory ? ' · ' + esc(v.subcategory) : '') + '</span>' +
       '<h1 class="h-md">' + esc(v.title) + '</h1>' +
       (v.model ? '<p style="color:var(--muted);font-size:14px;margin-bottom:16px">Model ' + esc(v.model) + '</p>' : '') +
       (money(v.price) ? '<div class="pdp__rating"><span class="card__price" style="font-size:24px">' + money(v.price) + '</span>' +
@@ -323,10 +382,10 @@
           (d.length > 300 ? '<button class="link-arrow" id="descMore" style="margin:-14px 0 24px">Read full description <svg><use href="#i-arrow"/></svg></button>' : '');
       })(v.description) : '') +
 
-      (grp.variants.length > 1 ? '<div class="opt"><div class="opt__label">Colour — <b>' + esc(v.colour || v.variant_label) + '</b></div>' +
+      (grp.variants.length > 1 ? '<div class="opt"><div class="opt__label">Colour — <b>' + esc(v._colour) + '</b></div>' +
         '<div class="swatches">' + grp.variants.map(function (x) {
-          return '<a class="sw-img' + (x.sku === v.sku ? ' sel' : '') + '" href="product.html?g=' + encodeURIComponent(grp.id) + '&sku=' + encodeURIComponent(x.sku) + '" title="' + esc(x.colour || x.variant_label) + '">' +
-            '<img loading="lazy" src="' + esc(img(x.swatch || x.image_main, 160)) + '" alt="' + esc(x.colour) + '"></a>';
+          return '<a class="sw-img' + (x.sku === v.sku ? ' sel' : '') + '" href="product.html?g=' + encodeURIComponent(grp.id) + '&sku=' + encodeURIComponent(x.sku) + '" title="' + esc(x._colour) + '">' +
+            '<img loading="lazy" src="' + esc(img(x.swatch || x.image_main, 160)) + '" alt="' + esc(x._colour) + '"></a>';
         }).join('') + '</div></div>' : '') +
 
       '<div class="buybox"><a href="' + esc(v.amazon_url) + '" target="_blank" rel="noopener" class="btn btn--amazon btn--xl btn--full">Shop on Amazon <svg><use href="#i-ext"/></svg></a>' +
@@ -349,7 +408,7 @@
       '</div></div></div></section>' +
 
       (related.length ? '<section class="section"><div class="wrap wrap--narrow"><div class="sec-head rv"><div>' +
-        '<span class="eyebrow">You might also like</span><h2 class="h-md">More ' + esc(grp.subcategory) + '</h2></div>' +
+        '<span class="eyebrow">You might also like</span><h2 class="h-md">More ' + esc(grp.subcategory || grp.category) + '</h2></div>' +
         '<a class="link-arrow" href="category.html?c=' + encodeURIComponent(v.category) + '">All ' + esc(v.category) + ' <svg><use href="#i-arrow"/></svg></a></div>' +
         '<div class="grid-4">' + related.map(function (p, i) { return productCard(p, i * .05); }).join('') + '</div></div></section>' : '') +
       footHTML();

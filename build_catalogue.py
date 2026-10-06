@@ -3,7 +3,7 @@
 Meyaar — turn an Amazon Category Listings Report into data/products.csv
 Usage:  python3 tools/build_catalogue.py  <report.zip or folder>  [--out data/products.csv]
 Re-run this whenever you download a fresh report from Seller Central.
-Your manual edits to category/subcategory/featured are preserved by SKU.
+Your manual edits to category/subcategory/featured/sort/hide/new are preserved by SKU.
 """
 import sys, os, csv, re, zipfile, tempfile, glob
 import openpyxl
@@ -57,7 +57,7 @@ def load_existing(path):
         with open(path, newline='', encoding='utf-8') as f:
             for r in csv.DictReader(f):
                 keep[r.get('sku', '')] = {k: r.get(k, '') for k in
-                                          ('category', 'subcategory', 'featured', 'sort', 'hide')}
+                                          ('category', 'subcategory', 'featured', 'sort', 'hide', 'new')}
     return keep
 
 def rows_from(xlsm):
@@ -119,7 +119,7 @@ def main():
                 image_3=imgs[2] if len(imgs) > 2 else '', image_4=imgs[3] if len(imgs) > 3 else '',
                 image_5=imgs[4] if len(imgs) > 4 else '',
                 swatch=clean(r[C['img_swatch']]),
-                featured=prev.get('featured', ''), sort=prev.get('sort', ''), hide=prev.get('hide', ''),
+                featured=prev.get('featured', ''), sort=prev.get('sort', ''), hide=prev.get('hide', ''), new=prev.get('new', ''),
             ))
     cols = list(items[0].keys())
     os.makedirs(os.path.dirname(out) or '.', exist_ok=True)

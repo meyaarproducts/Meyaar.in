@@ -1,9 +1,9 @@
-category,label,order,show_in_nav,heading,blurb,image
-Bags,Bags,1,yes,"Every Meyaar bag, in one place.","Travel backpacks, laptop bags, gym duffels and slings. Everything is shown by default — pick a type to narrow it down.",
-Phone Accessories,Phone,2,yes,"Everything your phone needs.","Cases, protection, holders, grips and car mounts.",
-Tech Accessories,Tech,3,yes,"The desk, solved one object at a time.","Cables, chargers, adapters and laptop gear that quietly do their job for years.",
-Audio,Audio,4,yes,"Sound you actually want to live with.","Headphones, earbuds, neckbands and speakers.",
-Wearables,Wearables,5,yes,"For the watch on your wrist.","Smart watches, and straps and bands to go with them.",
-Gaming,Gaming,6,yes,"Gear that keeps up with the player.","Keyboards, mice, controllers and pads.",
-Home & Utility,Living,7,no,"Small objects that change a room.","Lighting, storage and everyday utility.",
-Accessories,Other,8,no,"Everything else.","Products we are still filing into the right category.",
+category,label,order,show_in_nav,heading,blurb,image,subcategories
+Headphone Accessories,Headphones,1,yes,"Cases and care for the buds you never leave without.","Cases for AirPods, Galaxy Buds and Realme Buds, plus headband covers and stands for over-ear headphones.",,AirPods Pro 3|AirPods 5/4|AirPods Pro 2|Galaxy Buds 4/4 Pro|Galaxy Buds 3/3 Pro|Realme Buds|Over-Ear
+Phone Accessories,Phone,2,yes,"Everything your phone needs.","MagSafe wallets, mounts, grips and wrist lanyards.",,MagSafe Wallets|Mounts|Grips|Wrist Lanyards
+MacBook Accessories,MacBook,3,yes,"Protection and posture for your MacBook.","Keyboard protectors, hard-shell cases, sleeves and laptop stands.",,Keyboard Protectors|Cases|Sleeves|Stands
+Apple Watch Accessories,Apple Watch,4,yes,"For the watch on your wrist.","Protective cases and straps for every Apple Watch size.",,Cases|Straps
+Apple Pencil Accessories,Apple Pencil,5,yes,"Keep your Apple Pencil safe and easy to grip.","Silicone sleeves, cases and holders for Apple Pencil.",,Pencil Cases
+Gaming Accessories,Gaming,6,yes,"Gear that keeps up with the player.","PS5 controller covers, thumb grips, stands, docks and carrying cases.",,PS5 Accessories
+Desk Accessories,Desk,7,yes,"A desk that works as hard as you do.","Ergonomic mouse pads and lap desks.",,Mouse Pads|Lap Desks
+Bags,Bags,8,yes,"Bags built for the way you travel.","Vacuum-compression travel backpacks and insulated laptop totes.",,Travel Backpacks|Totes

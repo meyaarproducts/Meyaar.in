@@ -560,3 +560,24 @@ img.photo{ height:auto; object-fit:contain; transition:transform .8s var(--ease-
 .fld input:focus, .fld textarea:focus{ outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(253,110,30,.14); }
 
 .gal__thumbs{ grid-template-columns:repeat(auto-fit,minmax(66px,1fr)) !important; }
+
+/* Product imagery — uniform framing */
+.card__media{ background:#FFFFFF; padding:13%; border-bottom:1px solid var(--line); }
+.card__media img.photo{ mix-blend-mode:normal; object-fit:contain; filter:none;
+  width:100%; height:100%; }
+.card:hover .card__media .prod{ transform:scale(1.045) translateY(-2px); }
+.card__body{ border-top:0; }
+
+/* Hero: let the white background melt into the page */
+.hero__prod.photo{ mix-blend-mode:multiply; filter:none; }
+
+.cat__icon.photo{ mix-blend-mode:normal; object-fit:contain; }
+
+/* Product page gallery */
+.gal__main{ background:#FFFFFF; border:1px solid var(--line); }
+.gal__main .prod{ mix-blend-mode:normal; filter:none; width:100%; height:100%; object-fit:contain; }
+.thumb{ background:#FFFFFF; }
+.thumb img{ mix-blend-mode:normal; }
+
+/* "Featured" badge is meaningless when every card has it */
+.card__badge--best{ display:none; }
