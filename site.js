@@ -373,6 +373,10 @@
     if (grid) { page(); var mb = $('#more'); if (mb) mb.addEventListener('click', page); }
   }
 
+  /* Old ?g= links from the previous site that must keep opening the product they used to open.
+     Only consulted for ?g=; Amazon group/family data is not changed. */
+  var LEGACY_G = { 'MR-NQ12-8B0H': 'B0GN2F3JFY' };
+
   /* Find the family + child a product URL points at.
      ?asin=B0…  exact child · ?sku=…  exact child (old swatch links) · ?g=…  family (old card links) */
   function findTarget(asin, sku, gid) {
@@ -398,10 +402,22 @@
       if (s) return s;
     }
     if (gid) {
+      if (LEGACY_G[gid]) {
+        var l = hit(function (v) { return v.asin === LEGACY_G[gid]; });
+        if (l) return l;
+      }
       var g = DATA.groups.filter(function (x) { return x.id === gid; })[0];
       if (g) return { grp: g, v: g.rep };
-      return hit(function (v) { return v.group === gid || v.sku === gid; }) ||
-             famOfRaw(function (r) { return r.group === gid || r.sku === gid; });
+      /* Legacy fallback: families whose visible children carry this Amazon group or SKU. If several families
+         match (an Amazon group split by family_override), take the one whose matching child has the best
+         sort rank; unranked ties keep file order (Array sort is stable). */
+      var cands = [];
+      DATA.groups.forEach(function (x) {
+        var m = x.variants.filter(function (v) { return v.group === gid || v.sku === gid; });
+        if (m.length) cands.push({ grp: x, v: m[0], rank: Math.min.apply(null, m.map(sortOf)) });
+      });
+      if (cands.length) { cands.sort(function (a, b) { return a.rank - b.rank; }); return { grp: cands[0].grp, v: cands[0].v }; }
+      return famOfRaw(function (r) { return r.group === gid || r.sku === gid; });
     }
     return null;
   }
@@ -411,6 +427,9 @@
 
   function renderProduct(app) {
     var t = findTarget(qs('asin'), qs('sku'), qs('g'));
+    /* product.html?g= (empty) with nothing else valid: not a product link — go to the homepage */
+    var params = new URLSearchParams(location.search);
+    if (!t && params.has('g') && !params.get('g').trim()) { location.replace('index.html'); return; }
     if (!t) { app.innerHTML = navHTML('') + '<section class="section"><div class="wrap"><h1 class="h-lg">Product not found</h1><p class="lede" style="margin-top:16px"><a class="link-arrow" href="index.html">Back to home</a></p></div></section>' + footHTML(); return; }
     var grp = t.grp;
     var related = DATA.groups.filter(function (g) {
