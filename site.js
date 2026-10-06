@@ -270,7 +270,7 @@
       '<section class="hero"><div class="hero__bg"><div class="grid-overlay"></div>' +
       '<div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div></div>' +
       '<div class="hero__inner"><div class="hero__copy">' +
-      (hero.title ? '<div class="hero__pill"><b>New</b> ' + esc(hero.title) + '</div>' : '') +
+      (hero.title ? '<div class="hero__pill"><b>Bestseller</b> ' + esc(hero.title) + '</div>' : '') +
       '<h1 class="h-xl"><span class="line"><i>' + esc(s.hero_line1 || 'Thoughtfully') + '</i></span>' +
       '<span class="line"><i>' + esc(s.hero_line2 || 'designed.') + '</i></span>' +
       '<span class="line"><i class="accent">' + esc(s.hero_line3 || 'Quality for you.') + '</i></span></h1>' +
