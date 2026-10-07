@@ -83,7 +83,7 @@
     rows.forEach(function (r) {
       if (!isLive(r)) return;
       var k = familyKey(r);
-      if (!map[k]) { map[k] = { id: k, variants: [] }; order.push(k); }
+      if (!map[k]) { map[k] = { id: k, variants: [], order: order.length }; order.push(k); }
       map[k].variants.push(r);
     });
     return order.map(function (k) { return describeFamily(map[k]); });
@@ -102,6 +102,9 @@
     p.full_title = rep.title;
     p.category = rep.category; p.subcategory = rep.subcategory;
     p.price = rep.price; p.mrp = rep.mrp; p.model = rep.model;
+    var prices = v.map(function (x) { return parseFloat(x.price); }).filter(function (n) { return n > 0; });
+    p.priceMin = prices.length ? Math.min.apply(null, prices) : 0;
+    p.priceVaries = prices.length > 1 && Math.max.apply(null, prices) !== p.priceMin;
     p.image = rep.primary_image || rep.image_main;
     p.sort = Math.min.apply(null, v.map(sortOf));
     p.featured = v.some(function (x) { return yes(x.featured); });
@@ -160,41 +163,91 @@
     })[0] || null;
   }
 
+  /* ---------- customer-facing category labels (product data values stay unchanged) ---------- */
+  var trimAll = function (a) { return a.map(function (x) { return x.trim(); }); };
+  function catOf(c) { return DATA.cats.filter(function (x) { return x.category === c; })[0] || { category: c, label: c }; }
+  function catLabel(c) { return catOf(c).label || c; }
+  function subLabel(c, sub) {
+    var x = catOf(c), subs = trimAll((x.subcategories || '').split('|')), labs = trimAll((x.subcategory_labels || '').split('|'));
+    var i = subs.indexOf(sub);
+    return (i >= 0 && labs[i]) || sub;
+  }
+  /* product families in a category (and optional subcategory) */
+  function famsIn(c, sub) {
+    return DATA.groups.filter(function (g) { return g.category === c && (!sub || g.subcategory === sub); });
+  }
+  /* subcategories that hold at least one family, in categories.csv order */
+  function subsIn(c) {
+    var order = trimAll((catOf(c).subcategories || '').split('|')), have = [];
+    famsIn(c).forEach(function (g) { if (g.subcategory && have.indexOf(g.subcategory) < 0) have.push(g.subcategory); });
+    var r = function (x) { var i = order.indexOf(x); return i < 0 ? 999 : i; };
+    return have.sort(function (a, b) { return r(a) - r(b) || (a < b ? -1 : a > b ? 1 : 0); });
+  }
+  function navCats() {
+    return DATA.cats.filter(function (c) { return yes(c.show_in_nav) && famsIn(c.category).length; });
+  }
+  var bestFirst = function (a, b) { return a.sort - b.sort || a.order - b.order; };
+  function thumbFor(c, sub) { var g = famsIn(c, sub).sort(bestFirst)[0]; return g ? g.image : ''; }
+  var catURL = function (c, sub) {
+    return 'category.html?c=' + encodeURIComponent(c) + (sub ? '&s=' + encodeURIComponent(sub) : '');
+  };
+
   /* ---------- shared chrome ---------- */
   function navHTML(active) {
     var s = DATA.site;
-    var links = DATA.cats.filter(function (c) { return (c.show_in_nav || '').toLowerCase() === 'yes'; });
+    var cats = navCats(), isCat = cats.some(function (c) { return c.category === active; });
+    var chev = '<svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     return '<div class="announce"><span class="opt">Official Meyaar brand store <span class="dot"></span> </span>' +
       'Every product is sold and fulfilled by <b>Amazon India</b>' +
       '<span class="opt"> <span class="dot"></span> Bulk &amp; corporate orders welcome</span></div>' +
       '<header class="nav" id="nav"><div class="nav__inner">' +
       '<a href="index.html" class="brand"><img class="brand__logo" src="logo.png" alt="Meyaar"></a>' +
-      '<nav class="nav__links">' +
+      '<nav class="nav__links" aria-label="Main">' +
       '<a class="nav__link' + (active === 'home' ? ' active' : '') + '" href="index.html">Home</a>' +
-      links.map(function (c) {
-        return '<a class="nav__link' + (active === c.category ? ' active' : '') +
-          '" href="category.html?c=' + encodeURIComponent(c.category) + '">' + esc(c.label || c.category) + '</a>';
-      }).join('') +
+      '<button type="button" class="nav__link nav__cats' + (isCat ? ' active' : '') + '" id="catsBtn" aria-expanded="false" aria-controls="mega">Categories ' + chev + '</button>' +
+      '<a class="nav__link" href="index.html#new">New Arrivals</a>' +
       '<a class="nav__link' + (active === 'about' ? ' active' : '') + '" href="about.html">About</a>' +
       '<a class="nav__link' + (active === 'bulk' ? ' active' : '') + '" href="bulk.html">Bulk Orders</a>' +
       '</nav>' +
+      '<button type="button" class="icon-btn nav__search" id="searchBtn" aria-label="Search products" aria-controls="search"><svg><use href="#i-search"/></svg></button>' +
       '<div class="nav__actions"><a href="' + esc(s.amazon_store_url || '#') + '" target="_blank" rel="noopener" class="btn btn--amazon btn--sm">Shop on Amazon <svg><use href="#i-ext"/></svg></a></div>' +
       '<button class="burger" id="burger" aria-label="Menu"><span></span><span></span><span></span></button>' +
-      '</div></header>' +
+      '</div>' +
+      /* mega menu: category -> accessory types */
+      '<div class="mega" id="mega" hidden><div class="mega__inner">' + cats.map(function (c) {
+        return '<div class="mega__col"><a class="mega__head" href="' + catURL(c.category) + '">' + esc(catLabel(c.category)) + '</a>' +
+          subsIn(c.category).map(function (sub) {
+            var t = thumbFor(c.category, sub);
+            return '<a class="mega__item" href="' + catURL(c.category, sub) + '">' +
+              (t ? '<img class="photo" loading="lazy" src="' + esc(img(t, 120)) + '" alt="">' : '<span class="mega__dot"></span>') +
+              '<span>' + esc(subLabel(c.category, sub)) + '</span></a>';
+          }).join('') + '</div>';
+      }).join('') + '</div></div>' +
+      '</header>' +
       '<div class="drawer" id="drawer">' +
       '<a class="d-link" href="index.html">Home <span>01</span></a>' +
-      links.map(function (c, i) {
-        return '<a class="d-link" href="category.html?c=' + encodeURIComponent(c.category) + '" style="animation-delay:' + ((i + 2) * .05) + 's">' +
-          esc(c.label || c.category) + ' <span>' + ('0' + (i + 2)).slice(-2) + '</span></a>';
+      cats.map(function (c, i) {
+        return '<div class="d-group"><a class="d-link" href="' + catURL(c.category) + '" style="animation-delay:' + ((i + 2) * .05) + 's">' +
+          esc(catLabel(c.category)) + ' <span>' + ('0' + (i + 2)).slice(-2) + '</span></a>' +
+          '<div class="d-subs">' + subsIn(c.category).map(function (sub) {
+            return '<a href="' + catURL(c.category, sub) + '">' + esc(subLabel(c.category, sub)) + '</a>';
+          }).join('') + '</div></div>';
       }).join('') +
-      '<a class="d-link" href="about.html">About <span>' + ('0' + (links.length + 2)).slice(-2) + '</span></a>' +
-      '<a class="d-link" href="bulk.html">Bulk Orders <span>' + ('0' + (links.length + 3)).slice(-2) + '</span></a>' +
-      '<div class="drawer__cta"><a href="bulk.html" class="btn btn--ghost btn--full">Bulk / Corporate Orders</a></div></div>';
+      '<a class="d-link" href="index.html#new">New Arrivals <span>' + ('0' + (cats.length + 2)).slice(-2) + '</span></a>' +
+      '<a class="d-link" href="about.html">About <span>' + ('0' + (cats.length + 3)).slice(-2) + '</span></a>' +
+      '<a class="d-link" href="bulk.html">Bulk Orders <span>' + ('0' + (cats.length + 4)).slice(-2) + '</span></a>' +
+      '<div class="drawer__cta"><a href="bulk.html" class="btn btn--ghost btn--full">Bulk / Corporate Orders</a></div></div>' +
+      /* site search */
+      '<div class="search" id="search" hidden><div class="search__panel" role="dialog" aria-modal="true" aria-label="Search products">' +
+      '<div class="search__bar"><svg><use href="#i-search"/></svg>' +
+      '<input id="searchInput" type="search" placeholder="Search products, colours, models, SKU or ASIN" autocomplete="off" spellcheck="false" aria-label="Search products">' +
+      '<button type="button" class="search__close" id="searchClose" aria-label="Close search">Esc</button></div>' +
+      '<div class="search__results" id="searchResults" aria-live="polite"></div></div></div>';
   }
 
   function footHTML() {
     var s = DATA.site;
-    var cats = DATA.cats.slice(0, 6);
+    var cats = navCats();
     return '<footer class="footer"><div class="wrap"><div class="foot-grid">' +
       '<div class="foot-brand"><a href="index.html"><img src="logo-full.png" alt="Meyaar — Quality for you"></a>' +
       '<p>' + esc(s.about_short || '') + '</p><div class="socials">' +
@@ -203,7 +256,7 @@
       '<a href="mailto:' + esc(s.support_email) + '" aria-label="Email"><svg><use href="#i-mail"/></svg></a>' +
       '</div></div>' +
       '<div class="foot"><h5>Shop</h5><ul>' + cats.map(function (c) {
-        return '<li><a href="category.html?c=' + encodeURIComponent(c.category) + '">' + esc(c.label || c.category) + '</a></li>';
+        return '<li><a href="' + catURL(c.category) + '">' + esc(catLabel(c.category)) + '</a></li>';
       }).join('') + '</ul></div>' +
       '<div class="foot"><h5>Company</h5><ul>' +
       '<li><a href="about.html">About Meyaar</a></li><li><a href="about.html#story">Our story</a></li>' +
@@ -226,28 +279,19 @@
 
   /* ---------- cards ---------- */
   function productCard(p, delay) {
-    var price = money(p.price), mrp = money(p.mrp);
+    var price = money(p.priceMin || p.price), mrp = money(p.mrp);
     return '<a class="card rv" style="text-decoration:none' + (delay ? ';transition-delay:' + delay + 's' : '') + '" ' +
       'href="' + esc(productURL(p.rep)) + '">' +
       '<div class="card__media">' + (p.featured ? '<span class="card__badge card__badge--best">Featured</span>' : '') +
       (p.isNew ? '<span class="card__badge card__badge--new">New</span>' : '') +
       '<img class="prod photo" loading="lazy" src="' + esc(img(p.image, 500)) + '" alt="' + esc(p.title) + '"></div>' +
-      '<div class="card__body"><span class="card__cat">' + esc(p.subcategory || p.category) + '</span>' +
+      '<div class="card__body"><span class="card__cat">' + esc(p.subcategory ? subLabel(p.category, p.subcategory) : catLabel(p.category)) + '</span>' +
       '<h3 class="card__name">' + esc(p.title) + '</h3>' +
       (p.summary ? '<div class="card__meta">' + esc(p.summary) + '</div>' : '') +
       '<div class="card__foot">' +
-      (price ? '<span class="card__price">' + price + (mrp && mrp !== price ? ' <s>' + mrp + '</s>' : '') + '</span>' : '') +
+      (price ? '<span class="card__price">' + (p.priceVaries ? '<small>From</small> ' : '') + price +
+        (!p.priceVaries && mrp && mrp !== price ? ' <s>' + mrp + '</s>' : '') + '</span>' : '') +
       '<span class="btn btn--amazon btn--sm">View <svg><use href="#i-arrow"/></svg></span></div></div></a>';
-  }
-
-  function catTile(c, count, delay) {
-    var hero = c.image || (DATA.groups.filter(function (g) { return g.category === c.category; })[0] || {}).image;
-    return '<a class="cat rv" style="text-decoration:none' + (delay ? ';transition-delay:' + delay + 's' : '') + '" ' +
-      'href="category.html?c=' + encodeURIComponent(c.category) + '">' +
-      (hero ? '<img class="cat__icon photo" loading="lazy" src="' + esc(img(hero, 200)) + '" alt="">' : '<span class="cat__icon"></span>') +
-      '<div><div class="cat__name">' + esc(c.label || c.category) + '</div>' +
-      '<div class="cat__count">' + count + ' products</div></div>' +
-      '<span class="cat__arrow"><svg><use href="#i-arrow"/></svg></span></a>';
   }
 
   /* ---------- pages ---------- */
@@ -263,9 +307,6 @@
         '<span class="eyebrow">' + eyebrow + '</span><h2 class="h-lg">' + esc(heading) + '</h2></div></div>' +
         '<div class="grid-4">' + list.map(function (p, i) { return productCard(p, i * .05); }).join('') + '</div></div></section>' : '';
     };
-    var counts = {};
-    DATA.groups.forEach(function (g) { counts[g.category] = (counts[g.category] || 0) + 1; });
-
     app.innerHTML = navHTML('home') +
       '<section class="hero"><div class="hero__bg"><div class="grid-overlay"></div>' +
       '<div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div></div>' +
@@ -299,8 +340,16 @@
       '<section class="section section--tight band-grey"><div class="wrap"><div class="sec-head rv"><div>' +
       '<span class="eyebrow">Shop by category</span><h2 class="h-lg">' + esc(s.categories_heading || 'Every category, one standard.') + '</h2></div>' +
       '<p class="lede">' + esc(s.categories_sub || '') + '</p></div>' +
-      '<div class="cat-grid">' + DATA.cats.map(function (c, i) {
-        return counts[c.category] ? catTile(c, counts[c.category], i * .04) : '';
+      '<div class="cm">' + navCats().map(function (c, i) {
+        return '<div class="cm__col rv" style="transition-delay:' + (i * .04) + 's">' +
+          '<a class="cm__head" href="' + catURL(c.category) + '"><span>' + esc(catLabel(c.category)) + '</span>' +
+          '<em>' + famsIn(c.category).length + ' products</em></a><ul>' +
+          subsIn(c.category).map(function (sub) {
+            var t = thumbFor(c.category, sub), n = famsIn(c.category, sub).length;
+            return '<li><a class="cm__item" href="' + catURL(c.category, sub) + '">' +
+              (t ? '<img class="photo" loading="lazy" src="' + esc(img(t, 160)) + '" alt="">' : '<span class="cm__img"></span>') +
+              '<span>' + esc(subLabel(c.category, sub)) + '</span><em>' + n + '</em></a></li>';
+          }).join('') + '</ul></div>';
       }).join('') + '</div></div></section>' +
 
       '<section class="section"><div class="wrap"><div class="sec-head rv"><div>' +
@@ -329,48 +378,78 @@
       '</div></div></div></div></section>';
   }
 
+  /* Sorting / filtering only reorders or narrows what is displayed; the catalogue itself is never reduced. */
+  var SORTS = [
+    ['featured', 'Featured', function (a, b) { return (b.featured - a.featured) || bestFirst(a, b); }],
+    ['best', 'Best selling', bestFirst],
+    ['newest', 'Newest', function (a, b) { return (b.isNew - a.isNew) || bestFirst(a, b); }],
+    ['price-asc', 'Price: low to high', function (a, b) { return (a.priceMin || 1e12) - (b.priceMin || 1e12) || bestFirst(a, b); }],
+    ['price-desc', 'Price: high to low', function (a, b) { return (b.priceMin || -1) - (a.priceMin || -1) || bestFirst(a, b); }]
+  ];
+  var SHOWS = [
+    ['all', 'All products', function () { return true; }],
+    ['new', 'New arrivals', function (g) { return g.isNew; }],
+    ['best', 'Bestsellers', function (g) { return g.sort < 1e9; }]
+  ];
+  var pick = function (list, key) { return list.filter(function (x) { return x[0] === key; })[0] || list[0]; };
+
   function renderCategory(app) {
     var cname = qs('c'), sub = qs('s');
-    var cat = DATA.cats.filter(function (c) { return c.category === cname; })[0] || { category: cname, label: cname };
-    var all = DATA.groups.filter(function (g) { return g.category === cname; })
-      .sort(function (a, b) { return a.sort - b.sort; });
-    var subs = [];
-    all.forEach(function (g) { if (g.subcategory && subs.indexOf(g.subcategory) < 0) subs.push(g.subcategory); });
-    var subOrder = (cat.subcategories || '').split('|').map(function (x) { return x.trim(); }).filter(Boolean);
-    var rankSub = function (x) { var i = subOrder.indexOf(x); return i < 0 ? 999 : i; };
-    subs.sort(function (a, b) { return rankSub(a) - rankSub(b) || (a < b ? -1 : a > b ? 1 : 0); });
-    var shown = sub ? all.filter(function (g) { return g.subcategory === sub; }) : all;
+    var cat = catOf(cname), label = catLabel(cname);
+    var all = famsIn(cname);                                  /* one entry per product family */
+    var subs = subsIn(cname);
+    var base = sub ? famsIn(cname, sub) : all;
 
-    document.title = (cat.label || cname) + ' — Meyaar';
+    document.title = (sub ? subLabel(cname, sub) + ' — ' : '') + label + ' — Meyaar';
     app.innerHTML = navHTML(cname) +
       '<section class="cat-hero"><div class="glow" style="width:720px;height:720px;top:-54%;right:-16%;background:radial-gradient(circle,rgba(253,110,30,.14),transparent 62%)"></div>' +
-      '<div class="wrap"><div class="crumb"><a href="index.html">Home</a><svg><use href="#i-arrow"/></svg><b>' + esc(cat.label || cname) + '</b></div>' +
-      '<div class="cat-hero__inner"><span class="eyebrow">Meyaar ' + esc(cat.label || cname) + '</span>' +
-      '<h1 class="h-lg" style="max-width:18ch">' + esc(cat.heading || ('Every Meyaar ' + (cat.label || cname) + ' product, in one place.')) + '</h1>' +
-      (cat.blurb ? '<p class="lede" style="margin-top:18px;max-width:58ch">' + esc(cat.blurb) + '</p>' : '') +
+      '<div class="wrap"><div class="crumb"><a href="index.html">Home</a><svg><use href="#i-arrow"/></svg>' +
+      (sub ? '<a href="' + catURL(cname) + '">' + esc(label) + '</a><svg><use href="#i-arrow"/></svg><b>' + esc(subLabel(cname, sub)) + '</b>'
+           : '<b>' + esc(label) + '</b>') + '</div>' +
+      '<div class="cat-hero__inner"><span class="eyebrow">Meyaar ' + esc(label) + '</span>' +
+      '<h1 class="h-lg" style="max-width:18ch">' + esc(sub ? subLabel(cname, sub) : (cat.heading || ('Every Meyaar ' + label + ' product, in one place.'))) + '</h1>' +
+      (cat.blurb && !sub ? '<p class="lede" style="margin-top:18px;max-width:58ch">' + esc(cat.blurb) + '</p>' : '') +
       '</div></div></section>' +
       '<section class="section section--tight"><div class="wrap">' +
       (subs.length > 1 ? '<div class="filters">' +
-        '<a class="filt' + (sub ? '' : ' on') + '" href="category.html?c=' + encodeURIComponent(cname) + '">All ' + esc(cat.label || cname) + '</a>' +
+        '<a class="filt' + (sub ? '' : ' on') + '" href="' + catURL(cname) + '">All ' + esc(label) + '<span>' + all.length + '</span></a>' +
         subs.map(function (x) {
-          return '<a class="filt' + (sub === x ? ' on' : '') + '" href="category.html?c=' + encodeURIComponent(cname) + '&s=' + encodeURIComponent(x) + '">' + esc(x) + '</a>';
+          return '<a class="filt' + (sub === x ? ' on' : '') + '" href="' + catURL(cname, x) + '">' + esc(subLabel(cname, x)) +
+            '<span>' + famsIn(cname, x).length + '</span></a>';
         }).join('') + '</div>' : '') +
-      '<p class="cat-count">' + shown.length + (shown.length === 1 ? ' product' : ' products') + '</p>' +
-      (shown.length ? '<div class="grid-4" id="grid"></div>' +
-        (shown.length > 48 ? '<div style="text-align:center;margin-top:36px"><button class="btn btn--ghost btn--lg" id="more">Load more products</button></div>' : '')
-        : '<div class="empty">Nothing here yet.</div>') +
+      '<div class="cat-tools"><p class="cat-count" id="catCount"></p>' +
+      '<label class="cat-sel">Show <select id="showSel">' + SHOWS.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + '</option>'; }).join('') + '</select></label>' +
+      '<label class="cat-sel">Sort by <select id="sortSel">' + SORTS.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + '</option>'; }).join('') + '</select></label></div>' +
+      '<div class="grid-4" id="grid"></div>' +
+      '<div class="empty" id="catEmpty" hidden>Nothing here yet.</div>' +
+      '<div style="text-align:center;margin-top:36px"><button class="btn btn--ghost btn--lg" id="more" hidden>Load more products</button></div>' +
       '</div></section>' + bulkBand() + footHTML();
 
-    var grid = $('#grid'), shownCount = 0;
+    var grid = $('#grid'), more = $('#more'), sortSel = $('#sortSel'), showSel = $('#showSel');
+    sortSel.value = pick(SORTS, qs('sort'))[0]; showSel.value = pick(SHOWS, qs('show'))[0];
+    var shown = [], shownCount = 0;
     function page() {
       var next = shown.slice(shownCount, shownCount + 48);
       grid.insertAdjacentHTML('beforeend', next.map(function (p, i) { return productCard(p, Math.min(i, 8) * .04); }).join(''));
       shownCount += next.length;
-      var btn = $('#more');
-      if (btn && shownCount >= shown.length) btn.style.display = 'none';
-      $$('.rv:not(.in)', grid).forEach(function (e) { setTimeout(function(){ e.classList.add('in'); }, 30); });
+      more.hidden = shownCount >= shown.length;
+      $$('.rv:not(.in)', grid).forEach(function (e) { setTimeout(function () { e.classList.add('in'); }, 30); });
     }
-    if (grid) { page(); var mb = $('#more'); if (mb) mb.addEventListener('click', page); }
+    function draw() {
+      var sh = pick(SHOWS, showSel.value), so = pick(SORTS, sortSel.value);
+      shown = base.filter(sh[2]).sort(so[2]);
+      $('#catCount').textContent = shown.length + (shown.length === 1 ? ' product' : ' products') +
+        (shown.length !== base.length ? ' of ' + base.length : '');
+      $('#catEmpty').hidden = shown.length > 0;
+      grid.innerHTML = ''; shownCount = 0; page();
+      var u = new URLSearchParams(location.search);
+      if (so[0] === SORTS[0][0]) u.delete('sort'); else u.set('sort', so[0]);
+      if (sh[0] === SHOWS[0][0]) u.delete('show'); else u.set('show', sh[0]);
+      history.replaceState(null, '', 'category.html?' + u.toString());
+    }
+    sortSel.addEventListener('change', draw); showSel.addEventListener('change', draw);
+    more.addEventListener('click', page);
+    draw();
   }
 
   /* Old ?g= links from the previous site that must keep opening the product they used to open.
@@ -438,8 +517,8 @@
 
     app.innerHTML = navHTML(grp.category) + '<div id="pdpLive"></div>' +
       (related.length ? '<section class="section"><div class="wrap wrap--narrow"><div class="sec-head rv"><div>' +
-        '<span class="eyebrow">You might also like</span><h2 class="h-md">More ' + esc(grp.subcategory || grp.category) + '</h2></div>' +
-        '<a class="link-arrow" href="category.html?c=' + encodeURIComponent(grp.category) + '">All ' + esc(grp.category) + ' <svg><use href="#i-arrow"/></svg></a></div>' +
+        '<span class="eyebrow">You might also like</span><h2 class="h-md">More ' + esc(grp.subcategory ? subLabel(grp.category, grp.subcategory) : catLabel(grp.category)) + '</h2></div>' +
+        '<a class="link-arrow" href="' + catURL(grp.category) + '">All ' + esc(catLabel(grp.category)) + ' <svg><use href="#i-arrow"/></svg></a></div>' +
         '<div class="grid-4">' + related.map(function (p, i) { return productCard(p, i * .05); }).join('') + '</div></div></section>' : '') +
       footHTML();
 
@@ -480,14 +559,14 @@
     var varSpecs = grp.mode === 'matrix' ? grp.dims.map(function (d, i) { return [d.label, v._vals[i]]; })
                  : grp.mode === 'simple' ? [['Option', v._vals[0]]] : [['Colour', v.colour]];
     var specs = [['Model', v.model]].concat(varSpecs).concat([['Material', v.material], ['Brand', v.brand],
-                 ['ASIN', v.asin], ['Category', grp.category + (grp.subcategory ? ' · ' + grp.subcategory : '')],
+                 ['ASIN', v.asin], ['Category', catLabel(grp.category) + (grp.subcategory ? ' · ' + subLabel(grp.category, grp.subcategory) : '')],
                  ['Sold & fulfilled by', 'Amazon India']]).filter(function (r) { return r[1]; });
     document.title = v.title + ' — Meyaar';
 
     host.innerHTML =
       '<section class="wrap wrap--narrow"><div class="crumb"><a href="index.html">Home</a><svg><use href="#i-arrow"/></svg>' +
-      '<a href="category.html?c=' + encodeURIComponent(grp.category) + '">' + esc(grp.category) + '</a><svg><use href="#i-arrow"/></svg>' +
-      (grp.subcategory ? '<a href="category.html?c=' + encodeURIComponent(grp.category) + '&s=' + encodeURIComponent(grp.subcategory) + '">' + esc(grp.subcategory) + '</a>' +
+      '<a href="' + catURL(grp.category) + '">' + esc(catLabel(grp.category)) + '</a><svg><use href="#i-arrow"/></svg>' +
+      (grp.subcategory ? '<a href="' + catURL(grp.category, grp.subcategory) + '">' + esc(subLabel(grp.category, grp.subcategory)) + '</a>' +
       '<svg><use href="#i-arrow"/></svg>' : '') + '<b>' + esc(grp.title) + '</b></div></section>' +
 
       '<section class="wrap wrap--narrow" style="padding-bottom:clamp(40px,5vw,72px)"><div class="pdp" data-asin="' + esc(v.asin) + '">' +
@@ -498,7 +577,7 @@
           '<img class="photo" loading="lazy" src="' + esc(img(u, 240)) + '" alt=""></button>';
       }).join('') + '</div>' : '') + '</div>' +
 
-      '<div class="pdp__head"><span class="eyebrow">' + esc(grp.category) + (grp.subcategory ? ' · ' + esc(grp.subcategory) : '') + '</span>' +
+      '<div class="pdp__head"><span class="eyebrow">' + esc(catLabel(grp.category)) + (grp.subcategory ? ' · ' + esc(subLabel(grp.category, grp.subcategory)) : '') + '</span>' +
       '<h1 class="h-md" id="pdpTitle">' + esc(v.title) + '</h1>' +
       (v.model ? '<p style="color:var(--muted);font-size:14px;margin-bottom:16px">Model ' + esc(v.model) + '</p>' : '') +
       (money(v.price) ? '<div class="pdp__rating"><span class="card__price" id="pdpPrice" style="font-size:24px">' + money(v.price) + '</span>' +
@@ -621,6 +700,87 @@
     }
   }
 
+  /* ---------- site search ----------
+     Searches every live child of every listed family: title, short title, category / subcategory (data value
+     and customer-facing label), model, SKU, ASIN, colour / size / variation values and product copy.
+     One result per product family; when the match is specific to one child (its ASIN, SKU or colour),
+     the result opens that exact child. */
+  var normText = function (x) { return String(x == null ? '' : x).toLowerCase().replace(/[‘’“”"]/g, '').replace(/\s+/g, ' ').trim(); };
+  var SEARCH = null;
+  function searchIndex() {
+    if (SEARCH) return SEARCH;
+    SEARCH = DATA.groups.map(function (g) {
+      return {
+        g: g,
+        fam: normText([g.title, g.full_title, catLabel(g.category), g.category,
+                       g.subcategory ? subLabel(g.category, g.subcategory) : '', g.subcategory].join(' ')),
+        kids: g.variants.map(function (v) {
+          return { v: v, asin: normText(v.asin), sku: normText(v.sku),
+            title: ' ' + normText(v.title + ' ' + v.short_title),
+            vals: ' ' + normText([v.dim1_value, v.dim2_value, v.dim3_value, v.colour, v.variant_label].join(' ')),
+            model: normText(v.model),
+            body: normText([v.bullet1, v.bullet2, v.bullet3, v.bullet4, v.bullet5, v.description, v.material].join(' ')) };
+        })
+      };
+    });
+    return SEARCH;
+  }
+  function runSearch(q) {
+    var toks = normText(q).split(' ').filter(Boolean);
+    if (!toks.length) return [];
+    /* short words / numbers must be a whole word ("3" ≠ "T300"); longer words match the start of a word ("wall" → "wallet") */
+    var res = toks.map(function (t) {
+      var x = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp('(^|[^a-z0-9])' + x + (t.length <= 3 || /^\d+$/.test(t) ? '(?![a-z0-9])' : ''));
+    });
+    var out = [];
+    searchIndex().forEach(function (e) {
+      var best = null;
+      e.kids.forEach(function (k) {
+        var total = 0, specific = 0;
+        for (var i = 0; i < toks.length; i++) {
+          var t = toks[i], re = res[i], sc = 0, sp = false;
+          if (k.asin && k.asin === t) { sc = 100; sp = true; }
+          else if (k.sku && k.sku === t) { sc = 90; sp = true; }
+          else if (t.length >= 3 && k.sku.indexOf(t) >= 0) { sc = 40; sp = true; }
+          if (sc < 14 && re.test(k.vals)) { sc = 14; sp = true; }
+          if (sc < 12 && re.test(k.title)) sc = 12;
+          if (sc < 10 && re.test(e.fam)) { sc = 10; sp = false; }
+          if (sc < 6 && re.test(k.model)) sc = 6;
+          if (sc < 2 && t.length >= 4 && re.test(k.body)) sc = 2;
+          if (!sc) { total = 0; break; }                 /* every word must match somewhere */
+          total += sc; if (sp) specific += sc;
+        }
+        /* the whole query as a phrase in the product's own title or family text ranks first */
+        if (total && toks.length > 1 && (k.title.indexOf(toks.join(' ')) >= 0 || e.fam.indexOf(toks.join(' ')) >= 0)) total += 25;
+        if (total && (!best || total > best.total || (total === best.total && specific > best.specific)))
+          best = { k: k, total: total, specific: specific };
+      });
+      if (best) out.push({ g: e.g, v: best.specific ? best.k.v : e.g.rep, total: best.total, specific: best.specific > 0 });
+    });
+    return out.sort(function (a, b) { return b.total - a.total || bestFirst(a.g, b.g); });
+  }
+  function searchResultsHTML(q) {
+    var res = runSearch(q);
+    if (!normText(q)) {
+      return '<p class="search__hint">Popular categories</p><div class="search__chips">' + navCats().map(function (c) {
+        return '<a href="' + catURL(c.category) + '">' + esc(catLabel(c.category)) + '</a>';
+      }).join('') + '</div>';
+    }
+    if (!res.length) return '<p class="search__hint">No products match “' + esc(q) + '”. Try a product name, colour, SKU or ASIN.</p>';
+    return '<p class="search__hint">' + res.length + (res.length === 1 ? ' product' : ' products') + '</p>' +
+      res.slice(0, 30).map(function (r, i) {
+        var g = r.g, v = r.v, pic = v.image_main || g.image;
+        var vals = r.specific && v._vals && v._vals.length ? v._vals.join(' · ') : '';
+        return '<a class="sr' + (i ? '' : ' sr--first') + '" href="' + esc(productURL(v)) + '">' +
+          '<img class="photo" loading="lazy" src="' + esc(img(pic, 160)) + '" alt="">' +
+          '<span class="sr__txt"><b>' + esc(g.title) + '</b>' +
+          '<span>' + esc(catLabel(g.category)) + (g.subcategory ? ' › ' + esc(subLabel(g.category, g.subcategory)) : '') +
+          (g.summary ? ' · ' + esc(g.summary) : '') + '</span>' +
+          (vals ? '<em>' + esc(vals) + (v.asin ? ' · ' + esc(v.asin) : '') + '</em>' : '') + '</span></a>';
+      }).join('');
+  }
+
   /* ---------- behaviours shared by every page ---------- */
   function wireUp() {
     var nav = $('#nav'), progress = $('#progress');
@@ -642,6 +802,35 @@
       }, { threshold: .08, rootMargin: '0px 0px -5% 0px' });
       els.forEach(function (e) { io.observe(e); });
     } else els.forEach(function (e) { e.classList.add('in'); });
+
+    /* Categories mega menu */
+    var catsBtn = $('#catsBtn'), mega = $('#mega');
+    function setMega(open) { if (!mega) return; mega.hidden = !open; catsBtn.setAttribute('aria-expanded', open ? 'true' : 'false'); }
+    if (catsBtn) catsBtn.addEventListener('click', function (e) { e.stopPropagation(); setMega(mega.hidden); });
+    document.addEventListener('click', function (e) { if (mega && !mega.hidden && !mega.contains(e.target)) setMega(false); });
+
+    /* Search */
+    var sBox = $('#search'), sIn = $('#searchInput'), sOut = $('#searchResults');
+    function openSearch() {
+      setMega(false); document.body.classList.remove('nav-open');
+      sBox.hidden = false; document.body.classList.add('search-open');
+      sOut.innerHTML = searchResultsHTML(sIn.value); setTimeout(function () { sIn.focus(); sIn.select(); }, 20);
+    }
+    function closeSearch() { sBox.hidden = true; document.body.classList.remove('search-open'); }
+    if (sBox) {
+      $('#searchBtn').addEventListener('click', openSearch);
+      $('#searchClose').addEventListener('click', closeSearch);
+      sBox.addEventListener('click', function (e) { if (e.target === sBox) closeSearch(); });
+      sIn.addEventListener('input', function () { sOut.innerHTML = searchResultsHTML(sIn.value); });
+      sIn.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { var f = $('.sr', sOut); if (f) location.href = f.getAttribute('href'); }
+      });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { if (sBox && !sBox.hidden) closeSearch(); setMega(false); }
+      var typing = /input|textarea|select/i.test((e.target || {}).tagName || '');
+      if (e.key === '/' && !typing && sBox && sBox.hidden) { e.preventDefault(); openSearch(); }
+    });
 
     var tr = $('#marqueeTrack');
     if (tr && tr.firstElementChild) tr.appendChild(tr.firstElementChild.cloneNode(true));

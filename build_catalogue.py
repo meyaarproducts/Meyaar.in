@@ -10,7 +10,10 @@ REPORT is an .xlsm/.xlsx file, a folder of them, or the .zip Seller Central give
 
 What it does
   * Reads every report by Amazon's field names (row 5 of the Template sheet), never by column position.
-  * Updates ONLY ASINs that are already in products.csv. New ASINs go to catalogue_candidates.csv.
+  * Refreshes ASINs already in products.csv.
+  * Family completion: every Active Amazon child of a family that is listed on the site is shown
+    (re-shown if hidden, added if missing — with the family's Meyaar category). Other new ASINs
+    go to catalogue_candidates.csv until you give them a category.
   * Amazon-owned columns are refreshed: group (parent SKU), amazon_status, variation_theme,
     dim1_value..dim3_value, title, price, mrp, bullets, description, images, swatch.
     A blank report value never erases data.
@@ -190,14 +193,94 @@ def main(argv):
         for c in IMG_COLS:
             if p.get(c) and not re.match(r'https?://', p[c]): p[c] = ''; cleared += 1
 
+    # --- family completion -----------------------------------------------------------------
+    #     A family that is listed on the site must offer EVERY live child Amazon has for it.
+    #     Merchandising (bestseller / featured / new / your sheets) never removes a variation.
+    #     1. hidden rows of a listed family that are Active on Amazon are shown again
+    #     2. Active Amazon children of a listed family missing from products.csv are added,
+    #        with the family's Meyaar category/subcategory (copied from the family's representative)
+    #     Anything that cannot be placed with certainty is left out and reported.
+    fam_of = lambda p: p['family_override'] or p['group'] or p['sku']
+    visible = lambda p: (p.get('hide') or '').lower() != 'yes' and (p.get('amazon_status') or '').lower() != 'removed'
+    rank = lambda p: int(p['sort']) if (p.get('sort') or '').isdigit() else 10 ** 9
+    listed = collections.defaultdict(list)                 # family key -> visible rows
+    for p in P:
+        if visible(p): listed[fam_of(p)].append(p)
+    by_parent = collections.defaultdict(list)              # Amazon parent -> visible rows (any family key)
+    for p in P:
+        if visible(p) and p['group']: by_parent[p['group']].append(p)
+    pending = []                                           # (kind, parent, asin, sku, why)
+
+    def family_for(parent, dims):
+        """Family key for a child of `parent` with these dimension values, or None if ambiguous."""
+        rows = by_parent.get(parent, [])
+        keys = {fam_of(r) for r in rows}
+        if not rows: return None
+        if len(keys) == 1: return next(iter(keys))
+        # parent split by family_override: use an Amazon dimension whose values separate the families
+        for i in range(3):
+            owner = collections.defaultdict(set)
+            for r in rows: owner[r['dim%d_value' % (i + 1)]].add(fam_of(r))
+            if all(len(s) == 1 for s in owner.values()) and dims[i] in owner and dims[i]:
+                return next(iter(owner[dims[i]]))
+        return None
+
+    unhidden, added = [], []
+    for p in P:
+        if visible(p) or p['amazon_status'] != 'Active' or not p['asin'] or p['asin'] in dup_asins: continue
+        if p['family_override']:
+            key = p['family_override'] if p['family_override'] in listed else None
+        elif p['group'] in by_parent:
+            key = family_for(p['group'], [p['dim1_value'], p['dim2_value'], p['dim3_value']])
+        else:
+            key = None
+        if not key:
+            if p['group'] in by_parent: pending.append(('sibling_not_placed', p['group'], p['asin'], p['sku'], 'parent is split into several families and no Amazon dimension tells which'))
+            continue
+        if key != (p['group'] or p['sku']): p['family_override'] = key
+        rep = sorted(listed[key], key=rank)[0]                  # a re-shown child takes its family's Meyaar category
+        p['category'], p['subcategory'] = rep['category'], rep['subcategory']
+        p['hide'] = ''
+        unhidden.append(p['asin'])
+
+    known = {p['asin'] for p in P if p['asin']}
+    for parent in sorted(by_parent):
+        for r in children.get(parent, []):
+            a = asin_of(r)
+            if not a or a in known or get(r, 'status') != 'Active': continue
+            if a in dup_asins:
+                pending.append(('sibling_not_placed', parent, a, get(r, 'sku'), 'ASIN appears on several report rows')); continue
+            if get(r, 'brand').lower() != 'meyaar' or not get(r, 'img_main'):
+                pending.append(('sibling_not_placed', parent, a, get(r, 'sku'), 'not Meyaar brand or no main image')); continue
+            theme = fam_theme.get(parent, []) if parent not in theme_conflict else norm_theme(get(r, 'theme'))
+            dims = dims_for(r, theme) + ['', '', '']
+            key = family_for(parent, dims)
+            if not key:
+                pending.append(('sibling_not_placed', parent, a, get(r, 'sku'), 'parent is split into several families and no Amazon dimension tells which')); continue
+            rep = sorted(listed[key], key=rank)[0]
+            title = get(r, 'name')
+            others = [r[k] for k in IMG_OTHER if r.get(k)] + [''] * 5
+            row = {c: '' for c in cols}
+            row.update(sku=get(r, 'sku'), asin=a, group=parent, title=title, short_title=title.split(',')[0][:70],
+                       brand=get(r, 'brand'), category=rep['category'], subcategory=rep['subcategory'],
+                       colour=r.get(DIM_FIELD['COLOR'], ''), variant_label=r.get(DIM_FIELD['COLOR'], '') or r.get(DIM_FIELD['SIZE'], ''),
+                       model=r.get(DIM_FIELD['MODEL'], ''), price=get(r, 'price'), mrp=get(r, 'mrp'),
+                       description=get(r, 'description'), amazon_url='https://www.amazon.in/dp/' + a,
+                       image_main=get(r, 'img_main'), swatch=get(r, 'swatch'),
+                       amazon_status='Active', variation_theme='/'.join(theme),
+                       dim1_value=dims[0], dim2_value=dims[1], dim3_value=dims[2],
+                       family_override=key if key != parent else '')
+            for i, k in enumerate(BULLETS): row['bullet%d' % (i + 1)] = r.get(k, '')
+            for i in range(5): row['image_%d' % (i + 1)] = others[i]
+            P.append(row); known.add(a); added.append(a)
+
     # --- exceptions ---------------------------------------------------------
     EX = []
-    fam_of = lambda p: p['family_override'] or p['group'] or p['sku']
-    visible = lambda p: (p.get('hide') or '').lower() != 'yes'
     site_fams = {fam_of(p) for p in P if visible(p)}
     on_site = lambda fam: 'yes' if fam in site_fams else 'no'
     def ex(typ, fam, a='', sku='', detail=''):
         EX.append(dict(type=typ, family=fam, on_site=on_site(fam) if fam else '', asin=a, sku=sku, detail=detail))
+    for kind, parent, a, sku, why in pending: ex(kind, parent, a, sku, why)
 
     for a in sorted(dup_asins):
         for r in by_asin[a]:
@@ -262,16 +345,16 @@ def main(argv):
         elif p['amazon_status'] == 'Removed':
             ex('removed_on_amazon', fam_of(p), a, p['sku'], 'hide=%s' % (p['hide'] or 'no'))
 
-    # hidden siblings: hide=yes rows whose family already shows at least one row on the site
+    # rows still hidden inside a listed family (not verifiably live on Amazon)
     for p in P:
         if not visible(p) and fam_of(p) in site_fams:
-            ex('hidden_sibling_pending_review', fam_of(p), p['asin'], p['sku'],
-               'status=%s | %s' % (p['amazon_status'] or '-', p['title'][:90]))
+            ex('hidden_in_listed_family', fam_of(p), p['asin'], p['sku'],
+               'status=%s | not shown: no ASIN or not Active in the report | %s' % (p['amazon_status'] or '-', p['title'][:80]))
 
     # --- candidates: Active Meyaar listings with an ASIN that are not in products.csv
     CAND = []
     for a, rs in sorted(by_asin.items()):
-        if a in in_site: continue
+        if a in known: continue                  # already on the site (incl. family completion)
         r = rs[0]
         if get(r, 'status') != 'Active' or get(r, 'parentage') == 'Parent': continue
         if get(r, 'brand').lower() != 'meyaar': continue
@@ -298,6 +381,8 @@ def main(argv):
     print('%s products.csv: %d rows refreshed from the report%s' % (
         'Checked' if check else 'Updated', updated, ' (not written: --check)' if check else ''))
     if cleared: print('  cleared %d image cells that held text instead of an image link' % cleared)
+    print('  family completion: %d live children re-shown, %d live children added, %d not placed' % (
+        len(unhidden), len(added), len(pending)))
     for t, n in collections.Counter(e['type'] for e in EX).most_common():
         print('  %-32s %d' % (t, n))
     print('catalogue_candidates.csv: %d ASINs not on the site (%d with an image)' % (

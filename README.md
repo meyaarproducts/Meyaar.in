@@ -39,7 +39,8 @@ Everything else (`*.html`, `assets/`) is the design. Leave it alone unless you w
 
 ## Common jobs
 
-**Hide a product** — put `yes` in the `hide` column.
+**Hide a product** — put `yes` in the `hide` column of **every row of that product family**. A family that is listed on the
+site always shows all of its live Amazon variations: the catalogue refresh re-shows any live child that was hidden.
 
 **Bestsellers row on the home page** — the 8 products with the lowest `sort` number (1 = best seller). Rows with an empty `sort` never appear there.
 
@@ -85,6 +86,14 @@ The website mirrors Amazon's variation structure:
 * **Representative** — `primary=yes` picks the child shown on the card; `primary_image` overrides its card image.
 * **Product links** — `product.html?asin=B0…` opens an exact child. Old `?g=` and `?sku=` links still work.
 * Families whose Amazon data is inconsistent (see `catalogue_exceptions.csv`) fall back to a single "Option" selector.
+* **Every live variation is shown.** A product page offers every live Amazon child of the family, never just the ones in
+  Bestsellers / New Arrivals / your sheets. Homepage rows are merchandising only.
+* **Category pages** show one card per product family ("5 colours", "2 colours"); the product count is the number of
+  families. Show / Sort only reorder or narrow the display.
+* **Category labels** — `categories.csv` `label` is the customer-facing category name; `subcategory_labels` gives the
+  customer-facing name for each value in `subcategories` (same order), e.g. `Cases` → `MacBook Cases`. Product rows keep
+  the data values.
+* **Search** (magnifier in the header, or press `/`) searches titles, categories, models, colours, SKUs and ASINs.
 
 ---
 
@@ -100,8 +109,11 @@ When you add lots of products on Amazon:
    Add `--check` to only write the audit files without touching `products.csv`.
 3. Review `catalogue_exceptions.csv` (problems) and `catalogue_candidates.csv` (Amazon listings not on the site yet).
 
-Only ASINs already in `products.csv` are refreshed. Your columns — `category`, `subcategory`, `hide`, `featured`, `sort`,
-`new`, `family_override`, `primary`, `primary_image`, `amazon_url` — are never changed.
+ASINs already in `products.csv` are refreshed. **Family completion:** for every family listed on the site, any live
+Amazon child that is hidden is shown again and any live child that is missing is added — both take the family's
+category/subcategory. Other new Amazon listings go to `catalogue_candidates.csv` until you give them a category.
+Otherwise your columns — `category`, `subcategory`, `hide`, `featured`, `sort`, `new`, `family_override`, `primary`,
+`primary_image`, `amazon_url` — are never changed.
 
 ---
 
