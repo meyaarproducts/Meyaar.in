@@ -4,6 +4,7 @@ Meyaar — refresh products.csv from Amazon Category Listings Reports.
 
 Usage:
     python3 build_catalogue.py REPORT [REPORT ...] [--check] [--products products.csv]
+    python3 build_catalogue.py --sitemap-only        (rewrite sitemap.xml from products.csv; no report needed)
 
 REPORT is an .xlsm/.xlsx file, a folder of them, or the .zip Seller Central gives you.
 --check   writes the audit files only; products.csv is not touched.
@@ -21,6 +22,7 @@ What it does
     family_override, primary, primary_image, amazon_url, short_title.
   * An ASIN that appears on more than one report row is left untouched and listed for review.
   * Writes catalogue_exceptions.csv (problems to review) and catalogue_candidates.csv (ASINs not on the site).
+  * Rewrites sitemap.xml (home, static pages, every category / subcategory page, one URL per listed product).
 """
 import sys, os, csv, re, zipfile, tempfile, glob, collections
 import openpyxl
@@ -117,8 +119,51 @@ def get(r, f): return r.get(F[f], '')
 def asin_of(r): return get(r, 'id') if get(r, 'id_type') == 'ASIN' and get(r, 'id').startswith('B0') else ''
 
 
+# ---------------------------------------------------------------- sitemap
+SITE = 'https://meyaar.in/'
+
+
+def write_sitemap(P, path='sitemap.xml', cats_path='categories.csv'):
+    """One URL per page the site actually serves: home, static pages, category / subcategory pages and one
+    product page per listed family (its representative child). Uses the same visibility and family rules as site.js."""
+    from urllib.parse import quote
+    from xml.sax.saxutils import escape
+    live = lambda p: (p.get('hide') or '').lower() != 'yes' and (p.get('amazon_status') or '').lower() != 'removed'
+    fam = lambda p: p.get('family_override') or p.get('group') or p.get('sku')
+    rank = lambda p: int(p['sort']) if (p.get('sort') or '').isdigit() else 10 ** 9
+    families = collections.OrderedDict()
+    for p in P:
+        if live(p): families.setdefault(fam(p), []).append(p)
+    reps = []
+    for rows in families.values():
+        prim = [r for r in rows if (r.get('primary') or '').lower() == 'yes']
+        reps.append(prim[0] if prim else sorted(rows, key=rank)[0])
+    urls = [SITE, SITE + 'about.html', SITE + 'bulk.html', SITE + 'policies.html']
+    with open(cats_path, newline='', encoding='utf-8') as fh:
+        cats = [c for c in csv.DictReader(fh) if (c.get('show_in_nav') or '').lower() == 'yes']
+    used = collections.defaultdict(set)
+    for r in reps: used[r['category']].add(r['subcategory'])
+    for c in cats:
+        if c['category'] not in used: continue
+        urls.append(SITE + 'category.html?c=' + quote(c['category']))
+        for sub in (c.get('subcategories') or '').split('|'):
+            if sub.strip() in used[c['category']]:
+                urls.append(SITE + 'category.html?c=' + quote(c['category']) + '&s=' + quote(sub.strip()))
+    for r in reps:
+        urls.append(SITE + 'product.html?' + ('asin=' + quote(r['asin']) if r.get('asin') else 'sku=' + quote(r['sku'])))
+    with open(path, 'w', encoding='utf-8', newline='\n') as fh:
+        fh.write('<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n')
+        for u in urls: fh.write('  <url><loc>%s</loc></url>\n' % escape(u))
+        fh.write('</urlset>\n')
+    return len(urls)
+
+
 # ---------------------------------------------------------------- main
 def main(argv):
+    if '--sitemap-only' in argv:
+        prod = argv[argv.index('--products') + 1] if '--products' in argv else 'products.csv'
+        with open(prod, newline='', encoding='utf-8-sig') as fh: P = list(csv.DictReader(fh))
+        print('sitemap.xml: %d URLs' % write_sitemap(P)); return
     check = '--check' in argv
     prod = 'products.csv'
     if '--products' in argv: prod = argv[argv.index('--products') + 1]
@@ -377,6 +422,7 @@ def main(argv):
     if not check:
         with open(prod, 'w', newline='', encoding='utf-8') as fh:
             w = csv.DictWriter(fh, fieldnames=cols); w.writeheader(); w.writerows(P)
+        print('sitemap.xml: %d URLs' % write_sitemap(P))
 
     print('%s products.csv: %d rows refreshed from the report%s' % (
         'Checked' if check else 'Updated', updated, ' (not written: --check)' if check else ''))

@@ -56,6 +56,9 @@ site always shows all of its live Amazon variations: the catalogue refresh re-sh
 
 **Change homepage wording** — edit `data/site.csv`. The `story` field uses `|` to separate paragraphs.
 
+**Change the hero slideshow** — edit `hero_asins` in `site.csv` (ASINs separated by `|`, in slide order). A slide whose
+product is missing or has no `image_main` is skipped automatically, so it appears once its image arrives.
+
 **Turn on the bulk enquiry form** — create a free form endpoint (Formspree or similar), then paste its URL into the `form_endpoint` row of `site.csv`. Until then the form opens the visitor's email app instead.
 
 ---
@@ -81,6 +84,8 @@ The website mirrors Amazon's variation structure:
 * **Selectors** — `variation_theme` (e.g. `COLOR/SIZE`) and `dim1_value`…`dim3_value` come from Amazon.
   Each dimension gets its own selector (Colour, Size, Band Colour, Material, Model…); each child ASIN is one
   combination. Combinations that don't exist are shown greyed out and can't be picked.
+* **Flat selector** — `families.csv` `selector=flat` shows a family as one flat list (the `colour` column of each row)
+  instead of a grid. Used for `PS5-CONTROLLER-COVERS`, which merges several Amazon families.
 * **Selector labels** — `families.csv` renames a family's selector, e.g. Colour → Pack. Only add a row when Amazon's
   field name is misleading for that family.
 * **Representative** — `primary=yes` picks the child shown on the card; `primary_image` overrides its card image.
@@ -107,6 +112,8 @@ When you add lots of products on Amazon:
    python3 build_catalogue.py report1.xlsm report2.xlsm
    ```
    Add `--check` to only write the audit files without touching `products.csv`.
+   `sitemap.xml` is rewritten on every run; `python3 build_catalogue.py --sitemap-only` rewrites just the sitemap
+   after you edit `products.csv` by hand.
 3. Review `catalogue_exceptions.csv` (problems) and `catalogue_candidates.csv` (Amazon listings not on the site yet).
 
 ASINs already in `products.csv` are refreshed. **Family completion:** for every family listed on the site, any live

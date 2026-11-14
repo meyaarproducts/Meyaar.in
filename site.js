@@ -111,6 +111,8 @@
     p.isNew = v.some(function (x) { return yes(x['new']); });
     p.dims = []; p.issues = [];
     p.mode = v.length > 1 ? 'matrix' : 'single';
+    /* families.csv selector=flat: one flat list (e.g. Colour) built from each child's colour, never a grid */
+    if (p.mode === 'matrix' && String(fam.selector || '').toLowerCase() === 'flat') p.mode = 'flat';
 
     if (p.mode === 'matrix') {
       var themes = uniq(v.map(function (x) { return x.variation_theme || ''; }));
@@ -140,15 +142,16 @@
         v.forEach(function (x) { x._vals = p.dims.map(function (d) { return x._vals[d.idx]; }); });
       }
     }
-    if (p.mode === 'simple') {
-      var count = {};
+    if (p.mode === 'simple' || p.mode === 'flat') {
+      var count = {}, flat = p.mode === 'flat';
       v.forEach(function (x) {
-        var base = [x.dim1_value, x.dim2_value, x.dim3_value].filter(Boolean).join(' · ') ||
-                   x.colour || x.variant_label || x.asin || x.sku;
+        var base = (flat ? x.colour || x.dim1_value || x.variant_label : [x.dim1_value, x.dim2_value, x.dim3_value].filter(Boolean).join(' · ') ||
+                   x.colour || x.variant_label) || x.asin || x.sku;
         count[base] = (count[base] || 0) + 1;
         x._vals = [count[base] > 1 ? base + ' (' + count[base] + ')' : base];
       });
-      p.dims = [{ key: 'OPTION', idx: 0, label: 'Option', swatch: true, values: v.map(function (x) { return x._vals[0]; }) }];
+      p.dims = [{ key: flat ? 'COLOR' : 'OPTION', idx: 0, label: flat ? (fam.dim1_label || 'Colour') : 'Option', swatch: true,
+                  values: v.map(function (x) { return x._vals[0]; }) }];
     }
     if (p.mode === 'single') v.forEach(function (x) { x._vals = []; });
     p.summary = p.mode === 'simple' ? plural('option', v.length)
@@ -280,18 +283,116 @@
   /* ---------- cards ---------- */
   function productCard(p, delay) {
     var price = money(p.priceMin || p.price), mrp = money(p.mrp);
+    /* one badge per card: New wins over Featured */
+    var badge = p.isNew ? '<span class="card__badge card__badge--new">New</span>'
+              : p.featured ? '<span class="card__badge card__badge--best">Featured</span>' : '';
     return '<a class="card rv" style="text-decoration:none' + (delay ? ';transition-delay:' + delay + 's' : '') + '" ' +
       'href="' + esc(productURL(p.rep)) + '">' +
-      '<div class="card__media">' + (p.featured ? '<span class="card__badge card__badge--best">Featured</span>' : '') +
-      (p.isNew ? '<span class="card__badge card__badge--new">New</span>' : '') +
+      '<div class="card__media">' + badge +
       '<img class="prod photo" loading="lazy" src="' + esc(img(p.image, 500)) + '" alt="' + esc(p.title) + '"></div>' +
       '<div class="card__body"><span class="card__cat">' + esc(p.subcategory ? subLabel(p.category, p.subcategory) : catLabel(p.category)) + '</span>' +
-      '<h3 class="card__name">' + esc(p.title) + '</h3>' +
-      (p.summary ? '<div class="card__meta">' + esc(p.summary) + '</div>' : '') +
+      '<h3 class="card__name" title="' + esc(p.full_title || p.title) + '">' + esc(p.title) + '</h3>' +
+      '<div class="card__meta">' + esc(p.summary || '') + '</div>' +
       '<div class="card__foot">' +
       (price ? '<span class="card__price">' + (p.priceVaries ? '<small>From</small> ' : '') + price +
-        (!p.priceVaries && mrp && mrp !== price ? ' <s>' + mrp + '</s>' : '') + '</span>' : '') +
+        (!p.priceVaries && mrp && mrp !== price ? ' <s>' + mrp + '</s>' : '') + '</span>'
+             : '<span class="card__price card__price--none">See price on Amazon</span>') +
       '<span class="btn btn--amazon btn--sm">View <svg><use href="#i-arrow"/></svg></span></div></div></a>';
+  }
+
+  /* ---------- page meta: title, description, canonical and Open Graph ---------- */
+  function setMeta(m) {
+    var head = document.head;
+    var put = function (sel, make, attr, val) {
+      if (!val) return;
+      var el = head.querySelector(sel);
+      if (!el) { el = document.createElement(make[0]); el.setAttribute(make[1], make[2]); head.appendChild(el); }
+      el.setAttribute(attr, val);
+    };
+    var url = m.url ? new URL(m.url, location.href).href : '';
+    if (m.title) document.title = m.title;
+    put('meta[name="description"]', ['meta', 'name', 'description'], 'content', m.desc);
+    put('link[rel="canonical"]', ['link', 'rel', 'canonical'], 'href', url);
+    put('meta[property="og:title"]', ['meta', 'property', 'og:title'], 'content', m.title);
+    put('meta[property="og:description"]', ['meta', 'property', 'og:description'], 'content', m.desc);
+    put('meta[property="og:image"]', ['meta', 'property', 'og:image'], 'content', m.image);
+    put('meta[property="og:url"]', ['meta', 'property', 'og:url'], 'content', url);
+    put('meta[property="og:type"]', ['meta', 'property', 'og:type'], 'content', m.type);
+  }
+
+  /* ---------- hero slideshow ----------
+     Built from a list of ASINs (site.csv "hero_asins", "|"-separated). A slide whose product is missing
+     or has no image_main is skipped, so the deck grows by itself when a later report brings the image. */
+  var HERO_DEFAULT = ['B0GFXD351G', 'B0HJ8TLJNF', 'B0GR75KYR3', 'B0GVTRZ3Q2', 'B0H89WBS21', 'B0HMDN2BG8'];
+  function heroSlides() {
+    var list = (DATA.site.hero_asins || '').split('|').map(function (x) { return x.trim(); }).filter(Boolean);
+    if (!list.length) list = HERO_DEFAULT;
+    var out = [];
+    list.forEach(function (a) {
+      for (var i = 0; i < DATA.groups.length; i++) {
+        var v = DATA.groups[i].variants.filter(function (x) { return x.asin === a; })[0];
+        if (v) { if (/^https?:\/\//.test(v.image_main || '')) out.push({ grp: DATA.groups[i], v: v }); return; }
+      }
+    });
+    return out;
+  }
+  function heroHTML() {
+    var slides = heroSlides();
+    if (!slides.length) return '<h1 class="sr-only">Meyaar — Quality for you</h1>';
+    return '<section class="hs" id="hero" aria-roledescription="carousel" aria-label="Featured products">' +
+      '<h1 class="sr-only">Meyaar — Quality for you</h1><div class="hs__viewport">' +
+      slides.map(function (t, i) {
+        var g = t.grp, v = t.v, price = money(v.price), src = esc(img(v.image_main, 1000));
+        var line = [g.subcategory ? subLabel(g.category, g.subcategory) : catLabel(g.category), g.summary].filter(Boolean).join(' · ');
+        return '<div class="hs__slide' + (i ? '' : ' is-on') + '" role="group" aria-roledescription="slide" aria-label="' + (i + 1) + ' of ' + slides.length + '"' +
+          (i ? ' aria-hidden="true"' : '') + '>' +
+          '<div class="hs__copy"><span class="eyebrow">' + esc(catLabel(g.category)) + '</span>' +
+          '<h2 class="hs__title">' + esc(g.title) + '</h2>' +
+          '<p class="hs__line">' + esc(line) + (price ? ' · <b>' + price + '</b>' : '') + '</p>' +
+          '<a class="btn btn--amazon btn--lg hs__cta" href="' + esc(productURL(v)) + '"' + (i ? ' tabindex="-1"' : '') + '>Shop Now <svg><use href="#i-arrow"/></svg></a></div>' +
+          '<div class="hs__media"><img ' + (i ? 'data-src="' + src + '"' : 'src="' + src + '" fetchpriority="high"') +
+          ' alt="' + esc(v.title) + '" width="1000" height="1000"></div></div>';
+      }).join('') + '</div>' +
+      (slides.length > 1 ?
+        '<button class="hs__arrow hs__arrow--prev" type="button" aria-label="Previous slide"><svg><use href="#i-arrow-l"/></svg></button>' +
+        '<button class="hs__arrow hs__arrow--next" type="button" aria-label="Next slide"><svg><use href="#i-arrow"/></svg></button>' +
+        '<div class="hs__dots">' + slides.map(function (t, i) {
+          return '<button type="button" class="hs__dot' + (i ? '' : ' is-on') + '" aria-label="Show slide ' + (i + 1) + '" aria-current="' + (i ? 'false' : 'true') + '"></button>';
+        }).join('') + '</div>' : '') +
+      '</section>';
+  }
+  function initHero() {
+    var root = $('#hero'); if (!root) return;
+    var slides = $$('.hs__slide', root), dots = $$('.hs__dot', root), n = slides.length;
+    if (n < 2) return;
+    var cur = 0, paused = false, stopped = false, timer = null, x0 = null;
+    var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    function load(i) { var im = $('img[data-src]', slides[i]); if (im) { im.src = im.getAttribute('data-src'); im.removeAttribute('data-src'); } }
+    function show(i) {
+      cur = (i + n) % n;
+      slides.forEach(function (sl, j) {
+        var on = j === cur; sl.classList.toggle('is-on', on); sl.setAttribute('aria-hidden', on ? 'false' : 'true');
+        var a = $('.hs__cta', sl); if (a) a.tabIndex = on ? 0 : -1;
+      });
+      dots.forEach(function (d, j) { d.classList.toggle('is-on', j === cur); d.setAttribute('aria-current', j === cur ? 'true' : 'false'); });
+      load(cur); load((cur + 1) % n);                       /* lazy: only the shown slide and the next one */
+    }
+    function stop() { stopped = true; if (timer) clearInterval(timer); }
+    load(1);
+    root.setAttribute('data-autoplay', reduce ? 'off' : 'on');
+    if (!reduce) timer = setInterval(function () { if (!paused && !stopped) show(cur + 1); }, 2000);
+    $('.hs__arrow--prev', root).addEventListener('click', function () { stop(); show(cur - 1); });
+    $('.hs__arrow--next', root).addEventListener('click', function () { stop(); show(cur + 1); });
+    dots.forEach(function (d, j) { d.addEventListener('click', function () { stop(); show(j); }); });
+    root.addEventListener('mouseenter', function () { paused = true; });
+    root.addEventListener('mouseleave', function () { paused = false; });
+    root.addEventListener('focusin', function () { paused = true; });
+    root.addEventListener('focusout', function (e) { paused = root.contains(e.relatedTarget); });
+    root.addEventListener('touchstart', function (e) { paused = true; x0 = e.touches[0].clientX; }, { passive: true });
+    root.addEventListener('touchend', function (e) {
+      var dx = x0 === null ? 0 : e.changedTouches[0].clientX - x0; x0 = null;
+      if (Math.abs(dx) > 40) { stop(); show(cur + (dx < 0 ? 1 : -1)); } else paused = false;
+    }, { passive: true });
   }
 
   /* ---------- pages ---------- */
@@ -299,34 +400,19 @@
     var s = DATA.site;
     var byRank = function (a, b) { return a.sort - b.sort; };
     var best = DATA.groups.filter(function (g) { return g.sort < 1e9; }).sort(byRank).slice(0, 8);
-    var fresh = DATA.groups.filter(function (g) { return g.isNew; }).sort(byRank).slice(0, 8);
-    var featured = DATA.groups.filter(function (g) { return g.featured; }).sort(byRank);
-    var hero = featured[0] || best[0] || DATA.groups[0] || {};
+    var fresh = DATA.groups.filter(function (g) { return g.isNew && best.indexOf(g) < 0; }).sort(byRank).slice(0, 8);
     var row = function (id, eyebrow, heading, list) {
       return list.length ? '<section class="section"' + (id ? ' id="' + id + '"' : '') + '><div class="wrap"><div class="sec-head rv"><div>' +
         '<span class="eyebrow">' + eyebrow + '</span><h2 class="h-lg">' + esc(heading) + '</h2></div></div>' +
         '<div class="grid-4">' + list.map(function (p, i) { return productCard(p, i * .05); }).join('') + '</div></div></section>' : '';
     };
     app.innerHTML = navHTML('home') +
-      '<section class="hero"><div class="hero__bg"><div class="grid-overlay"></div>' +
-      '<div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div></div>' +
-      '<div class="hero__inner"><div class="hero__copy">' +
-      (hero.title ? '<div class="hero__pill"><b>Bestseller</b> ' + esc(hero.title) + '</div>' : '') +
-      '<h1 class="h-xl"><span class="line"><i>' + esc(s.hero_line1 || 'Thoughtfully') + '</i></span>' +
-      '<span class="line"><i>' + esc(s.hero_line2 || 'designed.') + '</i></span>' +
-      '<span class="line"><i class="accent">' + esc(s.hero_line3 || 'Quality for you.') + '</i></span></h1>' +
-      '<p class="lede hero__sub">' + esc(s.hero_sub || '') + '</p>' +
-      '<div class="hero__ctas">' +
-      (hero.rep ? '<a href="' + esc(productURL(hero.rep)) + '" class="btn btn--amazon btn--lg">See the ' + esc((hero.title || '').split(' ')[1] || 'range') + ' <svg><use href="#i-arrow"/></svg></a>' : '') +
-      '<a href="#shop" class="btn btn--ghost btn--lg">Shop the range <svg><use href="#i-arrow"/></svg></a></div>' +
-      '<div class="hero__stats">' +
+      heroHTML() +
+      '<div class="hs-stats"><div class="wrap"><div class="hero__stats">' +
       [['stat1_value', 'stat1_label'], ['stat2_value', 'stat2_label'], ['stat3_value', 'stat3_label'], ['stat4_value', 'stat4_label']]
         .filter(function (p) { return s[p[0]]; })
         .map(function (p) { return '<div class="stat"><b>' + esc(s[p[0]]) + '</b><span>' + esc(s[p[1]]) + '</span></div>'; }).join('') +
-      '</div></div>' +
-      '<div class="hero__visual"><div class="hero__ring"></div><div class="hero__ring r2"></div><div class="hero__ring r3"></div>' +
-      (hero.image ? '<img class="hero__prod photo" src="' + esc(img(hero.image, 1000)) + '" alt="' + esc(hero.title) + '">' : '') +
-      '</div></div></section>' +
+      '</div></div></div>' +
 
       '<div class="marquee"><div class="marquee__track" id="marqueeTrack"><div style="display:flex">' +
       (s.trust_items || '').split('|').filter(Boolean).map(function (t) {
@@ -364,6 +450,7 @@
         }).join('') + '</div></div></section>' +
 
       bulkBand() + footHTML();
+    initHero();
   }
 
   function bulkBand() {
@@ -376,6 +463,46 @@
       '<a href="bulk.html" class="btn btn--white btn--lg">Submit a bulk enquiry <svg><use href="#i-arrow"/></svg></a>' +
       '<a href="mailto:' + esc(s.bulk_email) + '" class="btn btn--onaccent btn--lg"><svg><use href="#i-mail"/></svg> ' + esc(s.bulk_email) + '</a>' +
       '</div></div></div></div></section>';
+  }
+
+  /* ---------- products-per-row control (listing toolbar) ----------
+     Phones: 1 / 2 per row. Wider screens: 2 / 3 / 4. Saved in localStorage so it carries across categories and visits. */
+  var DENSITY_KEY = 'meyaar.cols';
+  function densityIcon(n) {
+    var w = 18, gap = 2, cw = (w - gap * (n - 1)) / n, r = '';
+    for (var i = 0; i < n; i++) r += '<rect x="' + (i * (cw + gap)).toFixed(2) + '" y="1" width="' + cw.toFixed(2) + '" height="16" rx="1.5"/>';
+    return '<svg viewBox="0 0 18 18" aria-hidden="true">' + r + '</svg>';
+  }
+  function densityHTML() {
+    var btn = function (n, set) {
+      return '<button type="button" class="dens__btn" data-set="' + set + '" data-cols="' + n + '" aria-label="' + n + ' per row" aria-pressed="false">' + densityIcon(n) + '</button>';
+    };
+    return '<div class="dens" role="group" aria-label="Products per row">' +
+      '<span class="dens__set dens__set--m">' + btn(1, 'm') + btn(2, 'm') + '</span>' +
+      '<span class="dens__set dens__set--d">' + btn(2, 'd') + btn(3, 'd') + btn(4, 'd') + '</span></div>';
+  }
+  function readDensity() {
+    try { var v = JSON.parse(localStorage.getItem(DENSITY_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; } catch (e) { return {}; }
+  }
+  function initDensity(grid) {
+    var pref = readDensity();
+    function apply() {
+      if (pref.m) grid.setAttribute('data-cols-m', pref.m); else grid.removeAttribute('data-cols-m');
+      if (pref.d) grid.setAttribute('data-cols-d', pref.d); else grid.removeAttribute('data-cols-d');
+      $$('.dens__btn').forEach(function (b) {
+        var set = b.getAttribute('data-set'), n = +b.getAttribute('data-cols');
+        var on = pref[set] ? pref[set] === n : (set === 'm' ? n === 2 : n === (innerWidth >= 1200 ? 4 : 3));
+        b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.classList.toggle('on', on);
+      });
+    }
+    $$('.dens__btn').forEach(function (b) {
+      b.addEventListener('click', function () {
+        pref[b.getAttribute('data-set')] = +b.getAttribute('data-cols');
+        try { localStorage.setItem(DENSITY_KEY, JSON.stringify(pref)); } catch (e) { /* private mode: still applies for this page */ }
+        apply();
+      });
+    });
+    apply();
   }
 
   /* Sorting / filtering only reorders or narrows what is displayed; the catalogue itself is never reduced. */
@@ -400,15 +527,17 @@
     var subs = subsIn(cname);
     var base = sub ? famsIn(cname, sub) : all;
 
-    document.title = (sub ? subLabel(cname, sub) + ' — ' : '') + label + ' — Meyaar';
+    setMeta({ title: (sub ? subLabel(cname, sub) + ' — ' : '') + label + ' — Meyaar',
+              desc: [cat.heading, cat.blurb].filter(Boolean).join(' ') || ('Meyaar ' + label + ', sold and fulfilled by Amazon India.'),
+              image: thumbFor(cname, sub) || '', url: catURL(cname, sub), type: 'website' });
     app.innerHTML = navHTML(cname) +
       '<section class="cat-hero"><div class="glow" style="width:720px;height:720px;top:-54%;right:-16%;background:radial-gradient(circle,rgba(253,110,30,.14),transparent 62%)"></div>' +
       '<div class="wrap"><div class="crumb"><a href="index.html">Home</a><svg><use href="#i-arrow"/></svg>' +
       (sub ? '<a href="' + catURL(cname) + '">' + esc(label) + '</a><svg><use href="#i-arrow"/></svg><b>' + esc(subLabel(cname, sub)) + '</b>'
            : '<b>' + esc(label) + '</b>') + '</div>' +
-      '<div class="cat-hero__inner"><span class="eyebrow">Meyaar ' + esc(label) + '</span>' +
-      '<h1 class="h-lg" style="max-width:18ch">' + esc(sub ? subLabel(cname, sub) : (cat.heading || ('Every Meyaar ' + label + ' product, in one place.'))) + '</h1>' +
-      (cat.blurb && !sub ? '<p class="lede" style="margin-top:18px;max-width:58ch">' + esc(cat.blurb) + '</p>' : '') +
+      '<div class="cat-hero__inner">' + (sub ? '<span class="eyebrow">' + esc(label) + '</span>' : '') +
+      '<h1 class="h-lg cat-hero__title">' + esc(sub ? subLabel(cname, sub) : label) + '</h1>' +
+      ([cat.heading, cat.blurb].filter(Boolean).length ? '<p class="lede cat-hero__sub">' + esc([cat.heading, cat.blurb].filter(Boolean).join(' ')) + '</p>' : '') +
       '</div></div></section>' +
       '<section class="section section--tight"><div class="wrap">' +
       (subs.length > 1 ? '<div class="filters">' +
@@ -419,7 +548,8 @@
         }).join('') + '</div>' : '') +
       '<div class="cat-tools"><p class="cat-count" id="catCount"></p>' +
       '<label class="cat-sel">Show <select id="showSel">' + SHOWS.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + '</option>'; }).join('') + '</select></label>' +
-      '<label class="cat-sel">Sort by <select id="sortSel">' + SORTS.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + '</option>'; }).join('') + '</select></label></div>' +
+      '<label class="cat-sel">Sort by <select id="sortSel">' + SORTS.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + '</option>'; }).join('') + '</select></label>' +
+      densityHTML() + '</div>' +
       '<div class="grid-4" id="grid"></div>' +
       '<div class="empty" id="catEmpty" hidden>Nothing here yet.</div>' +
       '<div style="text-align:center;margin-top:36px"><button class="btn btn--ghost btn--lg" id="more" hidden>Load more products</button></div>' +
@@ -448,6 +578,7 @@
       history.replaceState(null, '', 'category.html?' + u.toString());
     }
     sortSel.addEventListener('change', draw); showSel.addEventListener('change', draw);
+    initDensity(grid);
     more.addEventListener('click', page);
     draw();
   }
@@ -509,7 +640,12 @@
     /* product.html?g= (empty) with nothing else valid: not a product link — go to the homepage */
     var params = new URLSearchParams(location.search);
     if (!t && params.has('g') && !params.get('g').trim()) { location.replace('index.html'); return; }
-    if (!t) { app.innerHTML = navHTML('') + '<section class="section"><div class="wrap"><h1 class="h-lg">Product not found</h1><p class="lede" style="margin-top:16px"><a class="link-arrow" href="index.html">Back to home</a></p></div></section>' + footHTML(); return; }
+    if (!t) {
+      setMeta({ title: 'Product not found — Meyaar' });
+      app.innerHTML = navHTML('') + '<section class="section"><div class="wrap"><h1 class="h-lg">Product not found</h1>' +
+        '<p class="lede" style="margin-top:16px">This product is no longer listed. <a class="link-arrow" href="index.html">Back to home</a></p></div></section>' + footHTML();
+      return;
+    }
     var grp = t.grp;
     var related = DATA.groups.filter(function (g) {
       return g.id !== grp.id && (grp.subcategory ? g.subcategory === grp.subcategory : g.category === grp.category);
@@ -557,11 +693,13 @@
     var shots = [v.image_main, v.image_1, v.image_2, v.image_3, v.image_4, v.image_5].filter(function (u) { return /^https?:\/\//.test(u || ''); });
     var bullets = [v.bullet1, v.bullet2, v.bullet3, v.bullet4, v.bullet5].filter(Boolean);
     var varSpecs = grp.mode === 'matrix' ? grp.dims.map(function (d, i) { return [d.label, v._vals[i]]; })
-                 : grp.mode === 'simple' ? [['Option', v._vals[0]]] : [['Colour', v.colour]];
+                 : grp.mode === 'simple' || grp.mode === 'flat' ? [[grp.dims[0].label, v._vals[0]]] : [['Colour', v.colour]];
     var specs = [['Model', v.model]].concat(varSpecs).concat([['Material', v.material], ['Brand', v.brand],
                  ['ASIN', v.asin], ['Category', catLabel(grp.category) + (grp.subcategory ? ' · ' + subLabel(grp.category, grp.subcategory) : '')],
                  ['Sold & fulfilled by', 'Amazon India']]).filter(function (r) { return r[1]; });
-    document.title = v.title + ' — Meyaar';
+    setMeta({ title: v.title + ' — Meyaar', desc: (v.bullet1 || v.description || v.title).slice(0, 200),
+              image: shots[0] || '', url: productURL(v), type: 'product' });
+    var priceHTML = money(v.price) ? '<span class="card__price">' + money(v.price) + '</span>' : '<span class="card__price card__price--none">See price on Amazon</span>';
 
     host.innerHTML =
       '<section class="wrap wrap--narrow"><div class="crumb"><a href="index.html">Home</a><svg><use href="#i-arrow"/></svg>' +
@@ -579,10 +717,11 @@
 
       '<div class="pdp__head"><span class="eyebrow">' + esc(catLabel(grp.category)) + (grp.subcategory ? ' · ' + esc(subLabel(grp.category, grp.subcategory)) : '') + '</span>' +
       '<h1 class="h-md" id="pdpTitle">' + esc(v.title) + '</h1>' +
-      (v.model ? '<p style="color:var(--muted);font-size:14px;margin-bottom:16px">Model ' + esc(v.model) + '</p>' : '') +
+      (v.model ? '<p class="pdp__model" style="color:var(--muted);font-size:14px;margin-bottom:16px">Model ' + esc(v.model) + '</p>' : '') +
       (money(v.price) ? '<div class="pdp__rating"><span class="card__price" id="pdpPrice" style="font-size:24px">' + money(v.price) + '</span>' +
         (money(v.mrp) && v.mrp !== v.price ? '<s style="color:var(--muted-2)">' + money(v.mrp) + '</s>' : '') +
-        '<span class="muted" style="font-size:12.5px">MRP incl. of all taxes · live price on Amazon</span></div>' : '') +
+        '<span class="muted" style="font-size:13px">MRP incl. of all taxes · live price on Amazon</span></div>'
+        : '<div class="pdp__rating"><span class="card__price card__price--none" id="pdpPrice">See price on Amazon</span></div>') +
       (v.description ? (function (d) {
         var short = d.length > 300 ? d.slice(0, 300).replace(/\s+\S*$/, '') + '…' : d;
         return '<p class="pdp__intro" id="desc">' + esc(short) + '</p>' +
@@ -591,6 +730,9 @@
 
       '<div class="variants">' + selectorsHTML(grp, v) + '</div>' +
 
+      /* sticky buy bar (phones only, CSS) */
+      '<div class="buybar" id="buybar"><div class="buybar__price">' + priceHTML + '</div>' +
+      '<a href="' + esc(v.amazon_url) + '" target="_blank" rel="noopener" class="btn btn--amazon buybar__btn">Shop on Amazon <svg><use href="#i-ext"/></svg></a></div>' +
       '<div class="buybox"><a href="' + esc(v.amazon_url) + '" target="_blank" rel="noopener" class="btn btn--amazon btn--xl btn--full" id="buyAmazon">Shop on Amazon <svg><use href="#i-ext"/></svg></a>' +
       '<div class="buybox__note"><svg><use href="#i-truck"/></svg> Sold and fulfilled by Amazon India — live price, delivery and returns on Amazon.</div>' +
       '<div class="buybox__note"><svg><use href="#i-shield"/></svg> Genuine Meyaar product. Support: ' + esc(DATA.site.support_email) + '</div></div>' +
@@ -687,7 +829,7 @@
       }).join('') +
       '<label class="fld fld--full"><span>Message</span><textarea name="message" rows="4"></textarea></label>' +
       '<div class="fld--full"><button class="btn btn--amazon btn--lg" type="submit">Send enquiry <svg><use href="#i-arrow"/></svg></button>' +
-      '<p style="font-size:12.5px;color:var(--muted);margin-top:14px">' +
+      '<p style="font-size:13px;color:var(--muted);margin-top:14px">' +
       (action ? 'Enquiries are delivered to ' + esc(s.bulk_email) + '.'
               : 'Form delivery is not connected yet — email ' + esc(s.bulk_email) + ' directly.') + '</p></div></form>';
     if (!action) {

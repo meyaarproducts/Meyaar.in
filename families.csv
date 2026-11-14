@@ -1,2 +1,3 @@
-family,dim1_label,dim2_label,dim3_label,note
-DO-LNLQ-BJAX,Pack,,,"PS5 thumb caps: B0GG5GYL25 (Pack of 10) + B0GG6362G1 (Pack of 16). Dust plug kit B0HHSLDHRK is split out via family_override = PS5-DUSTPLUG."
+family,dim1_label,dim2_label,dim3_label,note,selector
+DO-LNLQ-BJAX,Pack,,,PS5 thumb caps: B0GG5GYL25 (Pack of 10) + B0GG6362G1 (Pack of 16). Dust plug kit B0HHSLDHRK is split out via family_override = PS5-DUSTPLUG.,
+PS5-CONTROLLER-COVERS,Colour,,,"All PS5 controller covers as one product (MR-NQ12-8B0H, ZG-HLPC-YGAN, Gstac-PS5-Cotroller-Case + 4 loose ASINs). selector=flat: one Colour list from the colour column.",flat
