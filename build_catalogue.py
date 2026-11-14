@@ -5,6 +5,7 @@ Meyaar — refresh products.csv from Amazon Category Listings Reports.
 Usage:
     python3 build_catalogue.py REPORT [REPORT ...] [--check] [--products products.csv]
     python3 build_catalogue.py --sitemap-only        (rewrite sitemap.xml from products.csv; no report needed)
+    python3 build_catalogue.py --check-groups        (list visible rows that look like they lost their family; no report needed)
 
 REPORT is an .xlsm/.xlsx file, a folder of them, or the .zip Seller Central gives you.
 --check   writes the audit files only; products.csv is not touched.
@@ -22,6 +23,11 @@ What it does
     family_override, primary, primary_image, amazon_url, short_title.
   * An ASIN that appears on more than one report row is left untouched and listed for review.
   * Writes catalogue_exceptions.csv (problems to review) and catalogue_candidates.csv (ASINs not on the site).
+  * group = the parent SKU from the report's parentage / parent-SKU fields (by field name). Rows whose ASIN is
+    not in the report are matched by SKU, so a new child still gets its parent.
+  * Prints every visible row with an empty group whose title matches an existing family (a variation that
+    would otherwise show up as a stray single-colour listing).
+  * Drops hidden rows that have no ASIN (old parent placeholders).
   * Rewrites sitemap.xml (home, static pages, every category / subcategory page, one URL per listed product).
 """
 import sys, os, csv, re, zipfile, tempfile, glob, collections
@@ -117,6 +123,44 @@ def read_report(path):
 
 def get(r, f): return r.get(F[f], '')
 def asin_of(r): return get(r, 'id') if get(r, 'id_type') == 'ASIN' and get(r, 'id').startswith('B0') else ''
+def parent_of(r):
+    """Amazon parent SKU of a child row ('' for parents and standalone listings).
+    Some templates leave parentage_level blank on children but still fill the parent SKU."""
+    lvl = get(r, 'parentage')
+    return get(r, 'parent') if lvl == 'Child' or (not lvl and get(r, 'parent')) else ''
+
+
+# ---------------------------------------------------------------- ungrouped check
+def _title_key(p):
+    t = (p.get('short_title') or (p.get('title') or '').split(',')[0]).lower()
+    t = re.sub(r'\bmeyaar\b', ' ', t)
+    return re.sub(r'[^a-z0-9]+', ' ', t).strip()
+
+
+def ungrouped_matches(P):
+    """Visible rows with no group / family_override whose normalised title equals the title of a row in an
+    existing multi-row family. Returns [(row, family_key)]."""
+    vis = lambda p: (p.get('hide') or '').lower() != 'yes' and (p.get('amazon_status') or '').lower() != 'removed'
+    fam = lambda p: p.get('family_override') or p.get('group') or p.get('sku')
+    titles = collections.defaultdict(set)                 # title key -> families (with a real group)
+    for p in P:
+        if (p.get('group') or p.get('family_override')) and p.get('asin'):
+            k = _title_key(p)
+            if k: titles[k].add(fam(p))
+    out = []
+    for p in P:
+        if vis(p) and not p.get('group') and not p.get('family_override'):
+            hit = sorted(titles.get(_title_key(p), set()))
+            if hit: out.append((p, ' | '.join(hit)))
+    return out
+
+
+def print_ungrouped(P):
+    hits = ungrouped_matches(P)
+    print('ungrouped check: %d visible row(s) with an empty group whose title matches an existing family' % len(hits))
+    for p, f in hits:
+        print('  %-12s %-28s -> %s' % (p.get('asin') or '(no ASIN)', p.get('sku'), f))
+    return hits
 
 
 # ---------------------------------------------------------------- sitemap
@@ -164,6 +208,10 @@ def main(argv):
         prod = argv[argv.index('--products') + 1] if '--products' in argv else 'products.csv'
         with open(prod, newline='', encoding='utf-8-sig') as fh: P = list(csv.DictReader(fh))
         print('sitemap.xml: %d URLs' % write_sitemap(P)); return
+    if '--check-groups' in argv:
+        prod = argv[argv.index('--products') + 1] if '--products' in argv else 'products.csv'
+        with open(prod, newline='', encoding='utf-8-sig') as fh: P = list(csv.DictReader(fh))
+        print_ungrouped(P); return
     check = '--check' in argv
     prod = 'products.csv'
     if '--products' in argv: prod = argv[argv.index('--products') + 1]
@@ -185,10 +233,13 @@ def main(argv):
     by_asin = collections.defaultdict(list)
     for r in R:
         if asin_of(r): by_asin[asin_of(r)].append(r)
+    by_sku = collections.defaultdict(list)
+    for r in R:
+        if get(r, 'sku'): by_sku[get(r, 'sku')].append(r)
     parents = {get(r, 'sku'): r for r in R if get(r, 'parentage') == 'Parent'}
     children = collections.defaultdict(list)
     for r in R:
-        if get(r, 'parentage') == 'Child' and get(r, 'parent'): children[get(r, 'parent')].append(r)
+        if parent_of(r): children[parent_of(r)].append(r)
     dup_asins = {a for a, v in by_asin.items() if len(v) > 1}
 
     # --- resolve each Amazon family's theme (parent's theme order wins; conflicts flagged)
@@ -211,7 +262,7 @@ def main(argv):
         a = p['asin']
         if not a or a not in by_asin or a in dup_asins: continue
         r = by_asin[a][0]
-        fam = get(r, 'parent') if get(r, 'parentage') == 'Child' else ''
+        fam = parent_of(r)
         theme = (fam_theme.get(fam) if fam and fam not in theme_conflict else norm_theme(get(r, 'theme'))) or []
         if not fam: theme = []                         # standalone listing: no selectors
         dims = dims_for(r, theme) + ['', '', '']
@@ -229,6 +280,22 @@ def main(argv):
         if others:
             for i in range(5): p['image_%d' % (i + 1)] = others[i] if i < len(others) else ''
         updated += 1
+
+    # --- group backfill: a row the ASIN refresh did not reach (ASIN not in the report yet) still gets its
+    #     Amazon parent when the report has its SKU as a child row.
+    grouped = 0
+    for p in P:
+        if p['group'] or p['family_override'] or (p['asin'] and p['asin'] in by_asin): continue
+        rows = [r for r in by_sku.get(p['sku'], []) if parent_of(r)]
+        if len({parent_of(r) for r in rows}) != 1: continue
+        r = rows[0]; fam = parent_of(r)
+        p['group'] = fam; grouped += 1
+        theme = fam_theme.get(fam, []) if fam not in theme_conflict else []
+        if theme and not p['variation_theme']:              # give it the family's selector values too
+            dims = dims_for(r, theme) + ['', '', '']
+            if all(dims[:len(theme)]):
+                p['variation_theme'] = '/'.join(theme)
+                p['dim1_value'], p['dim2_value'], p['dim3_value'] = dims[:3]
 
     # --- image columns must hold image links. Older positional builds put bullet text in some of them;
     #     that text is not an image, so it is cleared (real links are never touched).
@@ -319,6 +386,11 @@ def main(argv):
             for i in range(5): row['image_%d' % (i + 1)] = others[i]
             P.append(row); known.add(a); added.append(a)
 
+    # --- hidden rows with no ASIN are old parent placeholders: nothing on the site can use them
+    before = len(P)
+    P[:] = [p for p in P if p['asin'] or visible(p)]
+    dropped = before - len(P)
+
     # --- exceptions ---------------------------------------------------------
     EX = []
     site_fams = {fam_of(p) for p in P if visible(p)}
@@ -376,6 +448,8 @@ def main(argv):
         for c in ch:
             if get(c, 'status') == 'Active' and not asin_of(c):
                 ex('child_without_asin', fam, '', get(c, 'sku'), 'id type=%s' % (get(c, 'id_type') or '(blank)'))
+    for p, f in ungrouped_matches(P):
+        ex('ungrouped_title_match', f, p['asin'], p['sku'], 'visible row with an empty group; title matches this family')
     for fam, why in sorted(simple.items()):
         ex('simple_mode_family', fam, detail='temporary single-selector fallback; reasons: ' + ', '.join(sorted(why)))
 
@@ -403,7 +477,7 @@ def main(argv):
         r = rs[0]
         if get(r, 'status') != 'Active' or get(r, 'parentage') == 'Parent': continue
         if get(r, 'brand').lower() != 'meyaar': continue
-        fam = get(r, 'parent') if get(r, 'parentage') == 'Child' else ''
+        fam = parent_of(r)
         theme = fam_theme.get(fam, []) if fam else []
         dims = dims_for(r, theme) + ['', '', '']
         CAND.append(dict(asin=a, sku=get(r, 'sku'), parent_sku=fam, family_on_site=on_site(fam) if fam else 'no',
@@ -427,6 +501,9 @@ def main(argv):
     print('%s products.csv: %d rows refreshed from the report%s' % (
         'Checked' if check else 'Updated', updated, ' (not written: --check)' if check else ''))
     if cleared: print('  cleared %d image cells that held text instead of an image link' % cleared)
+    if grouped: print('  group filled from the report (matched by SKU) on %d rows' % grouped)
+    if dropped: print('  dropped %d hidden rows with no ASIN' % dropped)
+    print_ungrouped(P)
     print('  family completion: %d live children re-shown, %d live children added, %d not placed' % (
         len(unhidden), len(added), len(pending)))
     for t, n in collections.Counter(e['type'] for e in EX).most_common():

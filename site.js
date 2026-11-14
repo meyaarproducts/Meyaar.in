@@ -281,21 +281,25 @@
   }
 
   /* ---------- cards ---------- */
-  function productCard(p, delay) {
-    var price = money(p.priceMin || p.price), mrp = money(p.mrp);
+  /* v (optional): show and open this child instead of the representative — used when a filter or a
+     search picked a specific colour */
+  function productCard(p, delay, v) {
+    var one = v && v !== p.rep;
+    var price = one ? money(v.price) : money(p.priceMin || p.price), mrp = money(one ? v.mrp : p.mrp), from = !one && p.priceVaries;
+    var link = productURL(v || p.rep), pic = (v && v.image_main) || p.image;
     /* one badge per card: New wins over Featured */
     var badge = p.isNew ? '<span class="card__badge card__badge--new">New</span>'
               : p.featured ? '<span class="card__badge card__badge--best">Featured</span>' : '';
     return '<a class="card rv" style="text-decoration:none' + (delay ? ';transition-delay:' + delay + 's' : '') + '" ' +
-      'href="' + esc(productURL(p.rep)) + '">' +
+      'href="' + esc(link) + '">' +
       '<div class="card__media">' + badge +
-      '<img class="prod photo" loading="lazy" src="' + esc(img(p.image, 500)) + '" alt="' + esc(p.title) + '"></div>' +
+      '<img class="prod photo" loading="lazy" src="' + esc(img(pic, 500)) + '" alt="' + esc(p.title) + '"></div>' +
       '<div class="card__body"><span class="card__cat">' + esc(p.subcategory ? subLabel(p.category, p.subcategory) : catLabel(p.category)) + '</span>' +
       '<h3 class="card__name" title="' + esc(p.full_title || p.title) + '">' + esc(p.title) + '</h3>' +
       '<div class="card__meta">' + esc(p.summary || '') + '</div>' +
       '<div class="card__foot">' +
-      (price ? '<span class="card__price">' + (p.priceVaries ? '<small>From</small> ' : '') + price +
-        (!p.priceVaries && mrp && mrp !== price ? ' <s>' + mrp + '</s>' : '') + '</span>'
+      (price ? '<span class="card__price">' + (from ? '<small>From</small> ' : '') + price +
+        (!from && mrp && mrp !== price ? ' <s>' + mrp + '</s>' : '') + '</span>'
              : '<span class="card__price card__price--none">See price on Amazon</span>') +
       '<span class="btn btn--amazon btn--sm">View <svg><use href="#i-arrow"/></svg></span></div></div></a>';
   }
@@ -365,7 +369,8 @@
     var root = $('#hero'); if (!root) return;
     var slides = $$('.hs__slide', root), dots = $$('.hs__dot', root), n = slides.length;
     if (n < 2) return;
-    var cur = 0, paused = false, stopped = false, timer = null, x0 = null;
+    var cur = 0, hover = false, kb = false, touch = false, held = false, timer = null, holdTimer = null, x0 = null;
+    var STEP = 2000, RESUME = 8000;   /* advance every 2 s; after a tap / click / swipe wait 8 s, then carry on */
     var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
     function load(i) { var im = $('img[data-src]', slides[i]); if (im) { im.src = im.getAttribute('data-src'); im.removeAttribute('data-src'); } }
     function show(i) {
@@ -377,21 +382,38 @@
       dots.forEach(function (d, j) { d.classList.toggle('is-on', j === cur); d.setAttribute('aria-current', j === cur ? 'true' : 'false'); });
       load(cur); load((cur + 1) % n);                       /* lazy: only the shown slide and the next one */
     }
-    function stop() { stopped = true; if (timer) clearInterval(timer); }
+    function start() { if (timer) clearInterval(timer); timer = setInterval(function () { if (!paused() && !held) show(cur + 1); }, STEP); }
+    function paused() { return hover || kb || touch; }
+    /* a customer interaction pauses autoplay; it resumes RESUME ms after the LAST interaction */
+    function hold() {
+      if (reduce) return;
+      held = true; root.setAttribute('data-autoplay', 'held');
+      clearTimeout(holdTimer);
+      holdTimer = setTimeout(function () {
+        held = false; root.setAttribute('data-autoplay', 'on');
+        if (!paused()) show(cur + 1);
+        start();
+      }, RESUME);
+    }
     load(1);
-    root.setAttribute('data-autoplay', reduce ? 'off' : 'on');
-    if (!reduce) timer = setInterval(function () { if (!paused && !stopped) show(cur + 1); }, 2000);
-    $('.hs__arrow--prev', root).addEventListener('click', function () { stop(); show(cur - 1); });
-    $('.hs__arrow--next', root).addEventListener('click', function () { stop(); show(cur + 1); });
-    dots.forEach(function (d, j) { d.addEventListener('click', function () { stop(); show(j); }); });
-    root.addEventListener('mouseenter', function () { paused = true; });
-    root.addEventListener('mouseleave', function () { paused = false; });
-    root.addEventListener('focusin', function () { paused = true; });
-    root.addEventListener('focusout', function (e) { paused = root.contains(e.relatedTarget); });
-    root.addEventListener('touchstart', function (e) { paused = true; x0 = e.touches[0].clientX; }, { passive: true });
+    root.setAttribute('data-autoplay', reduce ? 'off' : 'on');   /* prefers-reduced-motion: never autoplays */
+    if (!reduce) start();
+    $('.hs__arrow--prev', root).addEventListener('click', function () { hold(); show(cur - 1); });
+    $('.hs__arrow--next', root).addEventListener('click', function () { hold(); show(cur + 1); });
+    dots.forEach(function (d, j) { d.addEventListener('click', function () { hold(); show(j); }); });
+    /* hover pause is for a real mouse only: phones fire a fake mouseenter after a tap and never a mouseleave */
+    root.addEventListener('pointerenter', function (e) { if (e.pointerType === 'mouse') hover = true; });
+    root.addEventListener('pointerleave', function (e) { if (e.pointerType === 'mouse') hover = false; });
+    /* pause while a keyboard user is inside the slideshow. A mouse click also focuses the arrow in some
+       browsers; that must not pause it for good, so only keyboard focus (:focus-visible) counts. */
+    var kbFocus = function (el) { try { return el.matches(':focus-visible'); } catch (e) { return true; } };
+    root.addEventListener('focusin', function (e) { kb = kbFocus(e.target); });
+    root.addEventListener('focusout', function (e) { kb = !!e.relatedTarget && root.contains(e.relatedTarget) && kbFocus(e.relatedTarget); });
+    root.addEventListener('touchstart', function (e) { touch = true; x0 = e.touches[0].clientX; }, { passive: true });
     root.addEventListener('touchend', function (e) {
       var dx = x0 === null ? 0 : e.changedTouches[0].clientX - x0; x0 = null;
-      if (Math.abs(dx) > 40) { stop(); show(cur + (dx < 0 ? 1 : -1)); } else paused = false;
+      if (Math.abs(dx) > 40) { hold(); show(cur + (dx < 0 ? 1 : -1)); }
+      touch = false;
     }, { passive: true });
   }
 
@@ -510,15 +532,131 @@
     ['featured', 'Featured', function (a, b) { return (b.featured - a.featured) || bestFirst(a, b); }],
     ['best', 'Best selling', bestFirst],
     ['newest', 'Newest', function (a, b) { return (b.isNew - a.isNew) || bestFirst(a, b); }],
-    ['price-asc', 'Price: low to high', function (a, b) { return (a.priceMin || 1e12) - (b.priceMin || 1e12) || bestFirst(a, b); }],
-    ['price-desc', 'Price: high to low', function (a, b) { return (b.priceMin || -1) - (a.priceMin || -1) || bestFirst(a, b); }]
+    ['price-asc', 'Price: low to high', function (a, b) { return (shownPrice(a) || 1e12) - (shownPrice(b) || 1e12) || bestFirst(a, b); }],
+    ['price-desc', 'Price: high to low', function (a, b) { return (shownPrice(b) || -1) - (shownPrice(a) || -1) || bestFirst(a, b); }]
   ];
   var SHOWS = [
     ['all', 'All products', function () { return true; }],
     ['new', 'New arrivals', function (g) { return g.isNew; }],
     ['best', 'Bestsellers', function (g) { return g.sort < 1e9; }]
   ];
+  /* the price the card shows: a filtered / searched child's own price, else the family's lowest */
+  function shownPrice(g) { return g._shown ? parseFloat(g._shown.price) || 0 : g.priceMin; }
   var pick = function (list, key) { return list.filter(function (x) { return x[0] === key; })[0] || list[0]; };
+
+  /* ---------- colour + price filters (category pages and search results) ----------
+     Amazon colour names are specific ("Camera Black", "Pista", "Wine Red"); the filter groups them into
+     plain colours. A family passes when at least one of its live children matches every active filter,
+     and its card then opens and shows that child. */
+  var COLOUR_BASES = [
+    ['black', 'Black', /black|midnight/], ['white', 'White', /white|starlight/], ['grey', 'Grey', /gr[ae]y|charcoal/],
+    ['silver', 'Silver', /silver/], ['gold', 'Gold', /gold/], ['blue', 'Blue', /blue|navy|neavy|teal/],
+    ['green', 'Green', /green|pista|mint/], ['red', 'Red', /\bred\b|wine|burgundy|maroon/],
+    ['pink', 'Pink', /pink|peach|rose/], ['purple', 'Purple', /purple|lilac|lavender|violet/],
+    ['brown', 'Brown', /brown|\btan\b|wood|chocolate|coffee/], ['beige', 'Beige', /beige|sand|cream/],
+    ['yellow', 'Yellow', /yellow/], ['orange', 'Orange', /orange/], ['clear', 'Clear', /clear|transparent|crystal/],
+    ['multi', 'Multicolour', /multi|rainbow|rgb/]
+  ];
+  var COLOUR_DIMS = { COLOR: 1, BAND_COLOR: 1, PATTERN: 1 };
+  function coloursOf(v) {
+    if (v._colours) return v._colours;
+    var t = (v.variation_theme || '').split('/'), txt = [v.colour];
+    t.forEach(function (d, i) { if (COLOUR_DIMS[d]) txt.push(v['dim' + (i + 1) + '_value']); });
+    txt = txt.join(' ').toLowerCase();
+    v._colours = COLOUR_BASES.filter(function (c) { return c[2].test(txt); }).map(function (c) { return c[0]; });
+    return v._colours;
+  }
+  var PRICES = [
+    ['u300', 'Under ₹300', 0, 300], ['300-499', '₹300 – ₹499', 300, 500], ['500-999', '₹500 – ₹999', 500, 1000],
+    ['1000-1999', '₹1,000 – ₹1,999', 1000, 2000], ['2000', '₹2,000 and above', 2000, 1e12]
+  ];
+  function inPrice(v, key) {
+    var b = PRICES.filter(function (x) { return x[0] === key; })[0], n = parseFloat(v.price);
+    return !!b && n > 0 && n >= b[2] && n < b[3];
+  }
+  /* the child that satisfies the active colour / price filter (representative first), or null */
+  function filterChild(g, colour, price) {
+    var ok = function (v) { return (!colour || coloursOf(v).indexOf(colour) >= 0) && (!price || inPrice(v, price)); };
+    return ok(g.rep) ? g.rep : g.variants.filter(ok)[0] || null;
+  }
+
+  /* Toolbar + grid shared by category pages and the search page.
+     o.sorts: sort list · o.page: 'category.html' | 'search.html' · o.base(): families before colour/price
+     o.pre: optional child to show per family (search hits) · o.emptyText */
+  function listingHTML(o) {
+    var sel = function (id, label, list) {
+      return '<label class="cat-sel">' + label + ' <select id="' + id + '">' + list.map(function (x) {
+        return '<option value="' + x[0] + '">' + esc(x[1]) + '</option>'; }).join('') + '</select></label>';
+    };
+    return '<div class="cat-tools"><p class="cat-count" id="catCount"></p>' +
+      sel('showSel', 'Show', SHOWS) + sel('sortSel', 'Sort by', o.sorts) +
+      '<label class="cat-sel" id="colourWrap">Colour <select id="colourSel"></select></label>' +
+      '<label class="cat-sel" id="priceWrap">Price <select id="priceSel"></select></label>' +
+      densityHTML() + '</div>' +
+      '<div class="grid-4" id="grid"></div>' +
+      '<div class="empty" id="catEmpty" hidden>' + esc(o.emptyText || 'Nothing here yet.') +
+      ' <button type="button" class="link-arrow" id="clearFilt">Clear colour and price filters</button></div>' +
+      '<div style="text-align:center;margin-top:36px"><button class="btn btn--ghost btn--lg" id="more" hidden>Load more products</button></div>';
+  }
+  function initListing(o) {
+    var grid = $('#grid'), more = $('#more'), sortSel = $('#sortSel'), showSel = $('#showSel'),
+        colourSel = $('#colourSel'), priceSel = $('#priceSel');
+    sortSel.value = pick(o.sorts, qs('sort'))[0]; showSel.value = pick(SHOWS, qs('show'))[0];
+    var want = { colour: qs('colour'), price: qs('price') };
+    var shown = [], shownCount = 0;
+    function options(base) {
+      /* only colours / price bands that exist in the current list, each with its product count */
+      var col = COLOUR_BASES.map(function (c) {
+        return [c[0], c[1], base.filter(function (g) { return filterChild(g, c[0], priceSel.value); }).length];
+      }).filter(function (c) { return c[2]; });
+      var pr = PRICES.map(function (b) {
+        return [b[0], b[1], base.filter(function (g) { return filterChild(g, colourSel.value, b[0]); }).length];
+      }).filter(function (b) { return b[2]; });
+      var fill = function (el, list, keep, any) {
+        el.innerHTML = '<option value="">' + any + '</option>' + list.map(function (x) {
+          return '<option value="' + x[0] + '">' + esc(x[1]) + ' (' + x[2] + ')</option>'; }).join('');
+        el.value = list.some(function (x) { return x[0] === keep; }) ? keep : '';
+      };
+      fill(colourSel, col, colourSel.value || want.colour, 'Any colour');
+      fill(priceSel, pr, priceSel.value || want.price, 'Any price');
+      want = {};
+      $('#colourWrap').hidden = col.length < 2 && !colourSel.value;
+      $('#priceWrap').hidden = pr.length < 2 && !priceSel.value;
+    }
+    function page() {
+      var next = shown.slice(shownCount, shownCount + 48);
+      grid.insertAdjacentHTML('beforeend', next.map(function (x, i) { return productCard(x.g, Math.min(i, 8) * .04, x.v); }).join(''));
+      shownCount += next.length;
+      more.hidden = shownCount >= shown.length;
+      $$('.rv:not(.in)', grid).forEach(function (e) { setTimeout(function () { e.classList.add('in'); }, 30); });
+    }
+    function draw() {
+      var base = o.base();
+      options(base); options(base);              /* twice: each list's counts depend on the other's value */
+      var sh = pick(SHOWS, showSel.value), so = pick(o.sorts, sortSel.value), c = colourSel.value, p = priceSel.value;
+      shown = base.filter(sh[2]).map(function (g) {
+        var v = c || p ? filterChild(g, c, p) : (o.pre && o.pre(g)) || null;
+        g._shown = v && v !== g.rep ? v : null;
+        return (c || p) && !v ? null : { g: g, v: v };
+      }).filter(Boolean).sort(function (x, y) { return so[2](x.g, y.g); });
+      $('#catCount').textContent = shown.length + (shown.length === 1 ? ' product' : ' products') +
+        (shown.length !== base.length ? ' of ' + base.length : '');
+      $('#catEmpty').hidden = shown.length > 0;
+      $('#clearFilt').hidden = !(c || p);
+      grid.innerHTML = ''; shownCount = 0; page();
+      var u = new URLSearchParams(location.search);
+      var put = function (k, v, dflt) { if (!v || v === dflt) u.delete(k); else u.set(k, v); };
+      put('sort', so[0], o.sorts[0][0]); put('show', sh[0], SHOWS[0][0]); put('colour', c); put('price', p);
+      if (o.state) o.state(u);
+      history.replaceState(null, '', o.page + '?' + u.toString());
+    }
+    [sortSel, showSel, colourSel, priceSel].forEach(function (el) { el.addEventListener('change', draw); });
+    $('#clearFilt').addEventListener('click', function () { colourSel.value = ''; priceSel.value = ''; draw(); });
+    initDensity(grid);
+    more.addEventListener('click', page);
+    draw();
+    return draw;
+  }
 
   function renderCategory(app) {
     var cname = qs('c'), sub = qs('s');
@@ -546,41 +684,76 @@
           return '<a class="filt' + (sub === x ? ' on' : '') + '" href="' + catURL(cname, x) + '">' + esc(subLabel(cname, x)) +
             '<span>' + famsIn(cname, x).length + '</span></a>';
         }).join('') + '</div>' : '') +
-      '<div class="cat-tools"><p class="cat-count" id="catCount"></p>' +
-      '<label class="cat-sel">Show <select id="showSel">' + SHOWS.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + '</option>'; }).join('') + '</select></label>' +
-      '<label class="cat-sel">Sort by <select id="sortSel">' + SORTS.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + '</option>'; }).join('') + '</select></label>' +
-      densityHTML() + '</div>' +
-      '<div class="grid-4" id="grid"></div>' +
-      '<div class="empty" id="catEmpty" hidden>Nothing here yet.</div>' +
-      '<div style="text-align:center;margin-top:36px"><button class="btn btn--ghost btn--lg" id="more" hidden>Load more products</button></div>' +
+      listingHTML({ sorts: SORTS, emptyText: 'Nothing here matches those filters.' }) +
       '</div></section>' + bulkBand() + footHTML();
+    initListing({ sorts: SORTS, page: 'category.html', base: function () { return base; } });
+  }
 
-    var grid = $('#grid'), more = $('#more'), sortSel = $('#sortSel'), showSel = $('#showSel');
-    sortSel.value = pick(SORTS, qs('sort'))[0]; showSel.value = pick(SHOWS, qs('show'))[0];
-    var shown = [], shownCount = 0;
-    function page() {
-      var next = shown.slice(shownCount, shownCount + 48);
-      grid.insertAdjacentHTML('beforeend', next.map(function (p, i) { return productCard(p, Math.min(i, 8) * .04); }).join(''));
-      shownCount += next.length;
-      more.hidden = shownCount >= shown.length;
-      $$('.rv:not(.in)', grid).forEach(function (e) { setTimeout(function () { e.classList.add('in'); }, 30); });
+  /* ---------- search results page: search.html?q=… ----------
+     Same matching as the search box, one card per product family, same toolbar as a category page plus
+     category / subcategory chips built from the results. */
+  function renderSearch(app) {
+    var q = qs('q').trim(), hits = runSearch(q);
+    var hitOf = {}; hits.forEach(function (r, i) { r.rank = i; hitOf[r.g.id] = r; });
+    var fams = hits.map(function (r) { return r.g; });
+    var state = { cat: qs('cat'), sub: qs('sub') };
+    var sorts = [['relevance', 'Best match', function (a, b) { return hitOf[a.id].rank - hitOf[b.id].rank; }]].concat(SORTS);
+    var catLinks = '<div class="filters filters--wrap">' + navCats().map(function (c) {
+      return '<a class="filt" href="' + catURL(c.category) + '">' + esc(catLabel(c.category)) + '<span>' + famsIn(c.category).length + '</span></a>';
+    }).join('') + '</div>';
+
+    setMeta({ title: (q ? 'Results for “' + q + '”' : 'Search') + ' — Meyaar', desc: 'Search the Meyaar range — every product is sold and fulfilled by Amazon India.',
+              url: q ? searchURL(q) : 'search.html', type: 'website' });
+    app.innerHTML = navHTML('') +
+      '<section class="cat-hero cat-hero--search"><div class="wrap"><div class="crumb"><a href="index.html">Home</a><svg><use href="#i-arrow"/></svg><b>Search</b></div>' +
+      '<div class="cat-hero__inner"><h1 class="h-lg cat-hero__title">' + (q ? 'Results for “' + esc(q) + '”' : 'Search') + '</h1>' +
+      '<p class="lede cat-hero__sub" id="resCount">' + (!q ? 'Type a product name, colour, model, SKU or ASIN.'
+        : fams.length ? fams.length + (fams.length === 1 ? ' product' : ' products') : 'No products match “' + esc(q) + '”') + '</p>' +
+      '<form class="sp-form" action="search.html" role="search"><input type="search" name="q" value="' + esc(q) + '" ' +
+      'placeholder="Search products, colours, models, SKU or ASIN" aria-label="Search products" autocomplete="off" spellcheck="false">' +
+      '<button class="btn btn--amazon" type="submit">Search</button></form>' +
+      '</div></div></section>' +
+      '<section class="section section--tight"><div class="wrap">' +
+      (fams.length ? '<div id="chips"></div>' + listingHTML({ sorts: sorts, emptyText: 'No results match those filters.' })
+        : '<p class="h-sm" style="margin-bottom:16px">' + (q ? 'Browse a category instead' : 'Popular categories') + '</p>' + catLinks) +
+      '</div></section>' + footHTML();
+    if (!fams.length) return;
+
+    /* category chips (and the chosen category's subcategories), only for what is in the results */
+    var cats = uniq(fams.map(function (g) { return g.category; }));
+    var catRank = function (c) { var i = DATA.cats.map(function (x) { return x.category; }).indexOf(c); return i < 0 ? 99 : i; };
+    cats.sort(function (a, b) { return catRank(a) - catRank(b); });
+    if (cats.indexOf(state.cat) < 0) state.cat = '';
+    if (cats.length === 1) state.cat = cats[0];
+    var inCat = function () { return state.cat ? fams.filter(function (g) { return g.category === state.cat; }) : fams; };
+    function chips() {
+      var subs = uniq(inCat().map(function (g) { return g.subcategory; }).filter(Boolean));
+      var order = trimAll((catOf(state.cat).subcategories || '').split('|'));
+      subs.sort(function (a, b) { return order.indexOf(a) - order.indexOf(b); });
+      if (subs.indexOf(state.sub) < 0) state.sub = '';
+      var chip = function (kind, val, text, n, on) {
+        return '<button type="button" class="filt' + (on ? ' on' : '') + '" data-' + kind + '="' + esc(val) + '" aria-pressed="' + on + '">' +
+          esc(text) + '<span>' + n + '</span></button>';
+      };
+      var html = cats.length > 1 ? '<div class="filters">' + chip('cat', '', 'All results', fams.length, !state.cat) +
+        cats.map(function (c) { return chip('cat', c, catLabel(c), fams.filter(function (g) { return g.category === c; }).length, state.cat === c); }).join('') + '</div>' : '';
+      if (state.cat && subs.length > 1) html += '<div class="filters filters--sub">' + chip('sub', '', 'All ' + catLabel(state.cat), inCat().length, !state.sub) +
+        subs.map(function (x) { return chip('sub', x, subLabel(state.cat, x), inCat().filter(function (g) { return g.subcategory === x; }).length, state.sub === x); }).join('') + '</div>';
+      $('#chips').innerHTML = html;
+      $$('#chips [data-cat]').forEach(function (b) { b.addEventListener('click', function () { state.cat = b.getAttribute('data-cat'); state.sub = ''; chips(); redraw(); }); });
+      $$('#chips [data-sub]').forEach(function (b) { b.addEventListener('click', function () { state.sub = b.getAttribute('data-sub'); chips(); redraw(); }); });
     }
-    function draw() {
-      var sh = pick(SHOWS, showSel.value), so = pick(SORTS, sortSel.value);
-      shown = base.filter(sh[2]).sort(so[2]);
-      $('#catCount').textContent = shown.length + (shown.length === 1 ? ' product' : ' products') +
-        (shown.length !== base.length ? ' of ' + base.length : '');
-      $('#catEmpty').hidden = shown.length > 0;
-      grid.innerHTML = ''; shownCount = 0; page();
-      var u = new URLSearchParams(location.search);
-      if (so[0] === SORTS[0][0]) u.delete('sort'); else u.set('sort', so[0]);
-      if (sh[0] === SHOWS[0][0]) u.delete('show'); else u.set('show', sh[0]);
-      history.replaceState(null, '', 'category.html?' + u.toString());
-    }
-    sortSel.addEventListener('change', draw); showSel.addEventListener('change', draw);
-    initDensity(grid);
-    more.addEventListener('click', page);
-    draw();
+    chips();
+    var redraw = initListing({
+      sorts: sorts, page: 'search.html',
+      base: function () { return inCat().filter(function (g) { return !state.sub || g.subcategory === state.sub; }); },
+      pre: function (g) { var r = hitOf[g.id]; return r && r.specific ? r.v : null; },
+      state: function (u) {
+        u.set('q', q);
+        if (state.cat && cats.length > 1) u.set('cat', state.cat); else u.delete('cat');
+        if (state.sub) u.set('sub', state.sub); else u.delete('sub');
+      }
+    });
   }
 
   /* Old ?g= links from the previous site that must keep opening the product they used to open.
@@ -669,11 +842,18 @@
 
   /* One selector per variation dimension. A value is enabled only if the exact combination
      (that value + the other current selections) exists as a live child ASIN. */
+  /* Colour-type dimensions are a one-row slider of photo tiles (each tile is that child's own photo with its
+     name underneath); text dimensions (size, pack, model) stay as pills. */
   function selectorsHTML(grp, v) {
     return grp.dims.map(function (d, i) {
       var cur = v._vals[i];
-      return '<div class="opt" data-dim="' + i + '"><div class="opt__label">' + esc(d.label) + ' <b>' + esc(cur) + '</b></div>' +
-        '<div class="' + (d.swatch ? 'swatches' : 'pills') + '" role="radiogroup" aria-label="' + esc(d.label) + '">' +
+      var arrow = function (dir) {
+        return '<button type="button" class="vs__arrow vs__arrow--' + dir + '" aria-label="' + (dir === 'prev' ? 'Previous' : 'More') + ' ' +
+          esc(d.label.toLowerCase()) + ' options" tabindex="-1" hidden><svg><use href="#i-arrow' + (dir === 'prev' ? '-l' : '') + '"/></svg></button>';
+      };
+      return '<div class="opt" data-dim="' + i + '"><div class="opt__label">' + esc(d.label) + ' <span class="opt__sep" aria-hidden="true">—</span> <b>' + esc(cur) + '</b></div>' +
+        (d.swatch ? '<div class="vs">' + arrow('prev') : '') +
+        '<div class="' + (d.swatch ? 'vs__track' : 'pills') + '" role="radiogroup" aria-label="' + esc(d.label) + '">' +
         d.values.map(function (val) {
           var want = v._vals.slice(); want[i] = val;
           var child = matchChild(grp, want), sel = val === cur, dis = !child;
@@ -682,14 +862,41 @@
             (dis ? ' disabled aria-disabled="true"' : ' data-key="' + esc(rowKey(child)) + '"');
           if (!d.swatch) return '<button class="pill' + (sel ? ' sel' : '') + (dis ? ' dis' : '') + '"' + attrs + '>' + esc(val) + '</button>';
           var face = child || grp.variants.filter(function (x) { return x._vals[i] === val; })[0];
-          return '<button class="sw-img' + (sel ? ' sel' : '') + (dis ? ' dis' : '') + '"' + attrs + '>' +
-            '<img loading="lazy" src="' + esc(img(face.swatch || face.image_main, 160)) + '" alt="' + esc(val) + '"></button>';
-        }).join('') + '</div></div>';
+          var pic = /^https?:\/\//.test(face.swatch || '') ? face.swatch : face.image_main;
+          return '<button class="vt' + (sel ? ' sel' : '') + (dis ? ' dis' : '') + '"' + attrs + '>' +
+            '<span class="vt__img"><img loading="lazy" src="' + esc(img(pic, 240)) + '" alt=""></span>' +
+            '<span class="vt__name">' + esc(val) + '</span></button>';
+        }).join('') + '</div>' + (d.swatch ? arrow('next') + '</div>' : '') + '</div>';
     }).join('');
+  }
+  /* slider behaviour: keep the chosen tile in view; desktop arrows only when the row overflows */
+  function initSliders(host, prev) {
+    $$('.vs', host).forEach(function (vs, n) {
+      var track = $('.vs__track', vs), pv = $('.vs__arrow--prev', vs), nx = $('.vs__arrow--next', vs), sel = $('.vt.sel', track);
+      function arrows() {
+        var over = track.scrollWidth > track.clientWidth + 2;
+        pv.hidden = nx.hidden = !over;
+        pv.disabled = track.scrollLeft <= 2;
+        nx.disabled = track.scrollLeft + track.clientWidth >= track.scrollWidth - 2;
+      }
+      if (prev && prev[n] != null) track.scrollLeft = prev[n];        /* start where the row was before the re-render */
+      if (sel) {
+        var l = sel.offsetLeft - track.offsetLeft, r = l + sel.offsetWidth;
+        if (l < track.scrollLeft || r > track.scrollLeft + track.clientWidth)
+          track.scrollTo({ left: Math.max(0, l - (track.clientWidth - sel.offsetWidth) / 2), behavior: prev ? 'smooth' : 'auto' });
+      }
+      var step = function (dir) { track.scrollBy({ left: dir * Math.max(track.clientWidth * .8, 120), behavior: 'smooth' }); };
+      pv.addEventListener('click', function () { step(-1); });
+      nx.addEventListener('click', function () { step(1); });
+      track.addEventListener('scroll', arrows, { passive: true });
+      window.addEventListener('resize', arrows);
+      arrows();
+    });
   }
 
   function paintVariant(grp, v) {
     var host = $('#pdpLive');
+    var prevScroll = $$('.vs__track', host).map(function (t) { return t.scrollLeft; });
     var shots = [v.image_main, v.image_1, v.image_2, v.image_3, v.image_4, v.image_5].filter(function (u) { return /^https?:\/\//.test(u || ''); });
     var bullets = [v.bullet1, v.bullet2, v.bullet3, v.bullet4, v.bullet5].filter(Boolean);
     var varSpecs = grp.mode === 'matrix' ? grp.dims.map(function (d, i) { return [d.label, v._vals[i]]; })
@@ -717,6 +924,9 @@
 
       '<div class="pdp__head"><span class="eyebrow">' + esc(catLabel(grp.category)) + (grp.subcategory ? ' · ' + esc(subLabel(grp.category, grp.subcategory)) : '') + '</span>' +
       '<h1 class="h-md" id="pdpTitle">' + esc(v.title) + '</h1>' +
+      /* variation slider: above the price and the Shop on Amazon button. Phones: CSS moves it directly under
+         the gallery (pdp__head becomes display:contents and the slider is ordered first). */
+      '<div class="variants">' + selectorsHTML(grp, v) + '</div>' +
       (v.model ? '<p class="pdp__model" style="color:var(--muted);font-size:14px;margin-bottom:16px">Model ' + esc(v.model) + '</p>' : '') +
       (money(v.price) ? '<div class="pdp__rating"><span class="card__price" id="pdpPrice" style="font-size:24px">' + money(v.price) + '</span>' +
         (money(v.mrp) && v.mrp !== v.price ? '<s style="color:var(--muted-2)">' + money(v.mrp) + '</s>' : '') +
@@ -727,8 +937,6 @@
         return '<p class="pdp__intro" id="desc">' + esc(short) + '</p>' +
           (d.length > 300 ? '<button class="link-arrow" id="descMore" style="margin:-14px 0 24px">Read full description <svg><use href="#i-arrow"/></svg></button>' : '');
       })(v.description) : '') +
-
-      '<div class="variants">' + selectorsHTML(grp, v) + '</div>' +
 
       /* sticky buy bar (phones only, CSS) */
       '<div class="buybar" id="buybar"><div class="buybar__price">' + priceHTML + '</div>' +
@@ -752,6 +960,7 @@
       '<a href="' + esc(v.amazon_url) + '" target="_blank" rel="noopener" class="btn btn--amazon btn--lg">Shop on Amazon <svg><use href="#i-ext"/></svg></a>' +
       '</div></div></div></section>';
 
+    initSliders(host, prevScroll.length ? prevScroll : null);
     var dm = $('#descMore', host);
     if (dm) dm.addEventListener('click', function () { $('#desc', host).textContent = v.description; dm.remove(); });
 
@@ -861,20 +1070,25 @@
             title: ' ' + normText(v.title + ' ' + v.short_title),
             vals: ' ' + normText([v.dim1_value, v.dim2_value, v.dim3_value, v.colour, v.variant_label].join(' ')),
             model: normText(v.model),
-            body: normText([v.bullet1, v.bullet2, v.bullet3, v.bullet4, v.bullet5, v.description, v.material].join(' ')) };
+            body: normText([v.bullet1, v.bullet2, v.bullet3, v.bullet4, v.bullet5, v.description, v.material, v.category, v.subcategory].join(' ')) };
         })
       };
     });
     return SEARCH;
   }
+  /* numbers must be a whole word ("3" ≠ "T300"); short words a whole word or its plural ("bag" → "bags", never
+     "baggage"); longer words match the start of a word ("wall" → "wallet") */
+  function tokenRegex(t) {
+    var x = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    var tail = /^\d+$/.test(t) ? '(?![a-z0-9])' : t.length <= 3 ? '(?:e?s)?(?![a-z0-9])' : '';
+    return new RegExp('(^|[^a-z0-9])' + x + tail);
+  }
+  /* Every word of the query must be found in the same live child (title, short title, copy, bullets, colour /
+     variation values, category, subcategory, model, SKU or ASIN). One result per product family. */
   function runSearch(q) {
     var toks = normText(q).split(' ').filter(Boolean);
     if (!toks.length) return [];
-    /* short words / numbers must be a whole word ("3" ≠ "T300"); longer words match the start of a word ("wall" → "wallet") */
-    var res = toks.map(function (t) {
-      var x = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp('(^|[^a-z0-9])' + x + (t.length <= 3 || /^\d+$/.test(t) ? '(?![a-z0-9])' : ''));
-    });
+    var res = toks.map(tokenRegex);
     var out = [];
     searchIndex().forEach(function (e) {
       var best = null;
@@ -889,7 +1103,7 @@
           if (sc < 12 && re.test(k.title)) sc = 12;
           if (sc < 10 && re.test(e.fam)) { sc = 10; sp = false; }
           if (sc < 6 && re.test(k.model)) sc = 6;
-          if (sc < 2 && t.length >= 4 && re.test(k.body)) sc = 2;
+          if (sc < 2 && re.test(k.body)) sc = 2;
           if (!sc) { total = 0; break; }                 /* every word must match somewhere */
           total += sc; if (sp) specific += sc;
         }
@@ -900,8 +1114,14 @@
       });
       if (best) out.push({ g: e.g, v: best.specific ? best.k.v : e.g.rep, total: best.total, specific: best.specific > 0 });
     });
+    /* a query that is exactly one ASIN or SKU returns only the listing(s) that carry it */
+    if (toks.length === 1) {
+      var exact = out.filter(function (r) { return r.total >= 90; });
+      if (exact.length) out = exact;
+    }
     return out.sort(function (a, b) { return b.total - a.total || bestFirst(a.g, b.g); });
   }
+  var searchURL = function (q) { return 'search.html?q=' + encodeURIComponent(String(q || '').trim()); };
   function searchResultsHTML(q) {
     var res = runSearch(q);
     if (!normText(q)) {
@@ -909,12 +1129,14 @@
         return '<a href="' + catURL(c.category) + '">' + esc(catLabel(c.category)) + '</a>';
       }).join('') + '</div>';
     }
-    if (!res.length) return '<p class="search__hint">No products match “' + esc(q) + '”. Try a product name, colour, SKU or ASIN.</p>';
-    return '<p class="search__hint">' + res.length + (res.length === 1 ? ' product' : ' products') + '</p>' +
-      res.slice(0, 30).map(function (r, i) {
+    var all = '<a class="sr sr--all" href="' + esc(searchURL(q)) + '"><svg><use href="#i-search"/></svg>' +
+      '<span class="sr__txt"><b>See all results for ‘' + esc(q.trim()) + '’</b><span>' +
+      (res.length ? res.length + (res.length === 1 ? ' product' : ' products') : 'No exact matches — see suggestions') + '</span></span></a>';
+    if (!res.length) return all + '<p class="search__hint">No products match “' + esc(q) + '”. Try a product name, colour, SKU or ASIN.</p>';
+    return all + res.slice(0, 12).map(function (r, i) {
         var g = r.g, v = r.v, pic = v.image_main || g.image;
         var vals = r.specific && v._vals && v._vals.length ? v._vals.join(' · ') : '';
-        return '<a class="sr' + (i ? '' : ' sr--first') + '" href="' + esc(productURL(v)) + '">' +
+        return '<a class="sr sr--prod" href="' + esc(productURL(v)) + '">' +
           '<img class="photo" loading="lazy" src="' + esc(img(pic, 160)) + '" alt="">' +
           '<span class="sr__txt"><b>' + esc(g.title) + '</b>' +
           '<span>' + esc(catLabel(g.category)) + (g.subcategory ? ' › ' + esc(subLabel(g.category, g.subcategory)) : '') +
@@ -960,12 +1182,14 @@
     }
     function closeSearch() { sBox.hidden = true; document.body.classList.remove('search-open'); }
     if (sBox) {
+      if (document.body.getAttribute('data-page') === 'search') sIn.value = qs('q');
       $('#searchBtn').addEventListener('click', openSearch);
       $('#searchClose').addEventListener('click', closeSearch);
       sBox.addEventListener('click', function (e) { if (e.target === sBox) closeSearch(); });
       sIn.addEventListener('input', function () { sOut.innerHTML = searchResultsHTML(sIn.value); });
       sIn.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { var f = $('.sr', sOut); if (f) location.href = f.getAttribute('href'); }
+        /* Enter always opens the full results page — never a single product */
+        if (e.key === 'Enter' && normText(sIn.value)) { e.preventDefault(); location.href = searchURL(sIn.value); }
       });
     }
     document.addEventListener('keydown', function (e) {
@@ -1000,6 +1224,7 @@
       if (page === 'home') renderHome(app);
       else if (page === 'category') renderCategory(app);
       else if (page === 'product') renderProduct(app);
+      else if (page === 'search') renderSearch(app);
       else renderStatic(app, page);
       wireUp();
     }).catch(function (err) {

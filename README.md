@@ -98,7 +98,14 @@ The website mirrors Amazon's variation structure:
 * **Category labels** — `categories.csv` `label` is the customer-facing category name; `subcategory_labels` gives the
   customer-facing name for each value in `subcategories` (same order), e.g. `Cases` → `MacBook Cases`. Product rows keep
   the data values.
-* **Search** (magnifier in the header, or press `/`) searches titles, categories, models, colours, SKUs and ASINs.
+* **Variation slider** — colour-type selectors are one swipeable row of photo tiles (each tile is that child's `swatch`,
+  else its `image_main`, with the colour name underneath), above the price and the Shop on Amazon button. On phones the
+  row sits directly under the gallery. Size / pack / model selectors stay as buttons.
+* **Search** (magnifier in the header, or press `/`) searches titles, copy, bullets, categories, models, colours, SKUs and
+  ASINs; every word must match. The box suggests products; Enter or "See all results" opens `search.html?q=…`, a full
+  results page (one card per family) with the category toolbar plus category / subcategory chips.
+* **Colour and price filters** on category and search pages group Amazon colour names into plain colours
+  ("Camera Black" → Black, "Pista" → Green); a card then opens the matching child.
 
 ---
 
@@ -115,10 +122,13 @@ When you add lots of products on Amazon:
    `sitemap.xml` is rewritten on every run; `python3 build_catalogue.py --sitemap-only` rewrites just the sitemap
    after you edit `products.csv` by hand.
 3. Review `catalogue_exceptions.csv` (problems) and `catalogue_candidates.csv` (Amazon listings not on the site yet).
+   The run also prints any visible row with an empty `group` whose title matches an existing family (a colour that
+   would otherwise appear as its own card). `python3 build_catalogue.py --check-groups` runs only that check.
 
 ASINs already in `products.csv` are refreshed. **Family completion:** for every family listed on the site, any live
 Amazon child that is hidden is shown again and any live child that is missing is added — both take the family's
-category/subcategory. Other new Amazon listings go to `catalogue_candidates.csv` until you give them a category.
+category/subcategory. `group` comes from the report's parent-SKU field (rows whose ASIN isn't in the report are matched
+by SKU). Hidden rows with no ASIN are dropped. Other new Amazon listings go to `catalogue_candidates.csv` until you give them a category.
 Otherwise your columns — `category`, `subcategory`, `hide`, `featured`, `sort`, `new`, `family_override`, `primary`,
 `primary_image`, `amazon_url` — are never changed.
 

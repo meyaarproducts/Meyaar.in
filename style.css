@@ -811,3 +811,70 @@ body.search-open{ overflow:hidden; }
 }
 @media (max-width:430px){ .pdp__head .h-md{ font-size:18px; } }
 @media (max-width:979px){ .pdp__head .eyebrow::before{ display:none; } }
+
+/* ============================================================
+   Round 2 — variation slider, search results page, colour / price filters
+   ============================================================ */
+/* product page: the variation slider sits above the price / buy button (right column on desktop) and,
+   on phones, directly under the gallery */
+.pdp__head > .variants{ margin:4px 0 18px; min-width:0; }
+.pdp__head > .variants:empty{ display:none; }
+@media (max-width:980px){
+  .pdp{ display:flex; flex-direction:column; align-items:stretch; gap:0; }
+  .pdp > *, .pdp__head > *{ min-width:0; max-width:100%; }
+  .pdp__gallery{ margin-bottom:18px; }
+  .pdp__head{ display:contents; }
+  .pdp__head > *{ order:2; }
+  .pdp__head > .variants{ order:1; margin:0 0 14px; }
+}
+.opt__sep{ color:var(--muted-2); letter-spacing:0; }
+
+/* one horizontal row of photo tiles, never wraps */
+.vs{ position:relative; }
+.vs__track{ display:flex; flex-wrap:nowrap; gap:12px; overflow-x:auto; overflow-y:hidden; scroll-snap-type:x mandatory;
+  scrollbar-width:none; -ms-overflow-style:none; padding:4px 2px 6px; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; }
+.vs__track::-webkit-scrollbar{ display:none; }
+.vt{ --t:88px; flex:0 0 var(--t); width:var(--t); scroll-snap-align:start; display:flex; flex-direction:column; gap:7px;
+  padding:0; border:0; background:none; cursor:pointer; text-align:center; color:var(--ink); font:inherit; }
+@media (min-width:900px){ .vt{ --t:104px; } }
+.vt__img{ display:block; width:var(--t); height:var(--t); border-radius:var(--r-md); background:#fff; border:1px solid var(--line);
+  padding:6px; overflow:hidden; transition:box-shadow .2s, transform .2s, border-color .2s; }
+.vt__img img{ width:100%; height:100%; object-fit:contain; display:block; }
+.vt__name{ display:block; font-size:13px; line-height:1.3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--txt-2, var(--ink)); }
+.vt:hover:not(:disabled) .vt__img{ border-color:var(--line-2); }
+.vt.sel .vt__img{ border-color:#FD6E1E; box-shadow:0 0 0 1px #FD6E1E, 0 8px 18px rgba(17,18,20,.14); transform:translateY(-2px); }
+.vt.sel .vt__name{ color:var(--ink); font-weight:600; }
+.vt.dis{ cursor:not-allowed; }
+.vt.dis .vt__img{ opacity:.38; border-style:dashed; }
+.vt.dis .vt__name{ color:var(--muted-2); text-decoration:line-through; }
+.vt:focus-visible{ outline:none; }
+.vt:focus-visible .vt__img{ outline:2px solid var(--accent); outline-offset:2px; }
+.vs__arrow{ position:absolute; top:calc(4px + var(--ta, 104px) / 2); transform:translateY(-50%); z-index:2; width:40px; height:40px;
+  border-radius:50%; border:1px solid var(--line-2); background:#fff; color:var(--ink); display:grid; place-items:center; cursor:pointer;
+  box-shadow:0 4px 14px rgba(17,18,20,.12); }
+.vs__arrow svg{ width:16px; height:16px; }
+.vs__arrow--prev{ left:-14px; } .vs__arrow--next{ right:-14px; }
+.vs__arrow:disabled{ opacity:0; pointer-events:none; }
+.vs__arrow[hidden]{ display:none; }
+@media (max-width:899px){ .vs__arrow{ display:none !important; } }   /* phones swipe */
+
+/* listing toolbar extras */
+.cat-sel[hidden]{ display:none; }
+button.filt{ font:inherit; font-size:13px; font-weight:500; background:#fff; color:var(--txt-2, var(--ink)); cursor:pointer; }
+button.filt.on{ background:var(--ink); color:#fff; }
+.filters--sub{ margin-top:-14px; }
+.filters--wrap{ flex-wrap:wrap !important; margin-right:0 !important; }
+.empty .link-arrow{ margin-left:8px; background:none; border:0; font:inherit; color:var(--accent); cursor:pointer; }
+.empty .link-arrow[hidden]{ display:none; }
+
+/* search results page */
+.sp-form{ display:flex; gap:10px; margin-top:20px; max-width:560px; }
+.sp-form input{ flex:1; min-width:0; min-height:46px; padding:0 16px; font:inherit; font-size:15px; color:var(--ink);
+  border:1px solid var(--line-2); border-radius:var(--r-pill); background:#fff; }
+.sp-form input:focus{ outline:2px solid var(--accent); outline-offset:1px; }
+.sp-form .btn{ min-height:46px; }
+
+/* search box: the "See all results" row */
+.sr--all{ border:1px solid var(--line); margin-bottom:6px; }
+.sr--all > svg{ width:20px; height:20px; flex:none; margin:0 14px 0 6px; color:var(--accent); }
+.sr--all .sr__txt b{ color:var(--ink); }
