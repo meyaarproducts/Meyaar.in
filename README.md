@@ -101,9 +101,15 @@ The website mirrors Amazon's variation structure:
 * **Variation slider** — colour-type selectors are one swipeable row of photo tiles (each tile is that child's `swatch`,
   else its `image_main`, with the colour name underneath), above the price and the Shop on Amazon button. On phones the
   row sits directly under the gallery. Size / pack / model selectors stay as buttons.
-* **Search** (magnifier in the header, or press `/`) searches titles, copy, bullets, categories, models, colours, SKUs and
-  ASINs; every word must match. The box suggests products; Enter or "See all results" opens `search.html?q=…`, a full
-  results page (one card per family) with the category toolbar plus category / subcategory chips.
+* **Search** (magnifier in the header, or press `/`) matches a product when every word is in its title, colour,
+  category, model, SKU or ASIN, or when the words appear together as a phrase anywhere ("charger case"). Words
+  scattered through descriptions / bullets only count when nothing else matches. The box suggests products; Enter or
+  "See all results" opens `search.html?q=…` with the category toolbar plus category / subcategory chips.
+* **One card per variation** on category and search pages: each colour / size is its own card (its photo, name and
+  price) and opens that exact ASIN. Add `listing_cards,family` to `site.csv` to go back to one card per product.
+  Homepage rows stay one card per product.
+* **New Arrivals pins** — `site.csv` `new_asins` (`|`-separated) are shown first in the homepage New Arrivals row,
+  each card opening that exact ASIN; the other new products fill the rest of the 8 places.
 * **Colour and price filters** on category and search pages group Amazon colour names into plain colours
   ("Camera Black" → Black, "Pista" → Green); a card then opens the matching child.
 
